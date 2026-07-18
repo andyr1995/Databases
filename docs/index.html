@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0f8a7e" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a0e11" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fuel Finder">
+<meta name="description" content="Live UK fuel prices on a real map, with one-tap Google Maps navigation.">
+<title>Fuel Finder — live UK fuel prices</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="48x48" href="icons/favicon-48.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<style>
+  :root{
+    --bg:#e7ecee; --surface:#ffffff; --surface-2:#f3f6f7;
+    --ink:#0e1519; --muted:#5c6a73; --faint:#8b98a0; --line:#d8e0e3;
+    --accent:#0f8a7e; --on-accent:#ffffff;
+    --cheap:#12a150; --mid:#d99000; --dear:#e5484d; --you:#1f7ae0;
+    --shadow:0 1px 2px rgba(16,32,40,.10),0 6px 18px rgba(16,32,40,.12);
+    --shadow-lg:0 10px 34px rgba(16,32,40,.22);
+    --tile-filter:none;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0a0e11; --surface:#151b20; --surface-2:#1c242a;
+      --ink:#eaf1f4; --muted:#93a0a9; --faint:#5f6d76; --line:#2a353d;
+      --accent:#2fd4bf; --on-accent:#04201d;
+      --cheap:#31c46a; --mid:#ecad2b; --dear:#ff6b6f; --you:#4c9bff;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 18px rgba(0,0,0,.45);
+      --shadow-lg:0 12px 36px rgba(0,0,0,.6);
+      --tile-filter:brightness(.72) saturate(.35) hue-rotate(180deg) invert(1) brightness(.9) hue-rotate(180deg);
+    }
+  }
+
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%; margin:0; overscroll-behavior:none}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    position:fixed; inset:0; touch-action:none;
+  }
+
+  #map{position:absolute; inset:0; background:var(--bg); touch-action:none}
+  .leaflet-tile{filter:var(--tile-filter)}
+  .leaflet-control-attribution{
+    font-size:9px !important; background:color-mix(in srgb,var(--surface) 75%,transparent) !important;
+    color:var(--faint) !important;
+  }
+  .leaflet-control-attribution a{color:var(--muted) !important}
+
+  /* ---------- floating header ---------- */
+  .top{
+    position:absolute; left:0; right:0; top:0; z-index:800;
+    padding:calc(10px + env(safe-area-inset-top)) 12px 0; pointer-events:none;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .top>*{pointer-events:auto}
+  .bar{
+    display:flex; align-items:center; gap:8px; background:var(--surface);
+    border:1px solid var(--line); border-radius:14px; padding:8px 10px;
+    box-shadow:var(--shadow);
+  }
+  .logo{width:32px; height:32px; border-radius:9px; flex:none; display:block}
+  .t{display:flex; flex-direction:column; line-height:1.15; min-width:0; flex:1}
+  .t h1{margin:0; font-size:15px; font-weight:680; letter-spacing:-.2px}
+  .t .sub{font-size:11px; color:var(--muted); display:flex; align-items:center; gap:5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:var(--cheap);flex:none;
+    animation:live 2s ease-out infinite}
+  @keyframes live{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--cheap) 60%,transparent)}70%{box-shadow:0 0 0 6px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  .search{
+    border:0; background:var(--surface-2); border-radius:9px; padding:7px 10px;
+    font:inherit; font-size:13px; color:var(--ink); width:106px; min-width:0;
+  }
+  .search::placeholder{color:var(--faint)}
+  .search:focus{outline:2px solid var(--accent)}
+
+  .chips{display:flex; gap:6px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px}
+  .chips::-webkit-scrollbar{display:none}
+  .chip{
+    flex:none; border:1px solid var(--line); background:var(--surface); color:var(--muted);
+    font:inherit; font-size:12.5px; font-weight:600; padding:7px 12px; border-radius:99px;
+    cursor:pointer; box-shadow:var(--shadow); display:flex; gap:5px; align-items:center;
+  }
+  .chip small{font-weight:500; color:var(--faint); font-size:10px}
+  .chip[aria-pressed="true"]{background:var(--accent); border-color:var(--accent); color:var(--on-accent)}
+  .chip[aria-pressed="true"] small{color:color-mix(in srgb,var(--on-accent) 75%,transparent)}
+
+  /* ---------- price pins ---------- */
+  .ppin{background:none; border:none}
+  .pill{
+    position:absolute; left:50%; bottom:0; transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; cursor:pointer;
+    filter:drop-shadow(0 2px 4px rgba(0,0,0,.25));
+  }
+  .pill .box{
+    background:var(--surface); border:1px solid var(--line); border-top:3px solid var(--pc,var(--mid));
+    border-radius:9px; padding:3px 7px 4px; display:flex; flex-direction:column; align-items:center;
+    line-height:1; min-width:46px; transition:transform .15s ease;
+  }
+  .pill .b{font-size:8.5px; font-weight:660; color:var(--muted); text-transform:uppercase;
+    letter-spacing:.3px; margin-bottom:2px; max-width:70px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis}
+  .pill .p{font-size:13px; font-weight:730; color:var(--pc,var(--ink)); font-variant-numeric:tabular-nums}
+  .pill .p small{font-size:8px; color:var(--faint); font-weight:600}
+  .pill .stem{width:2px; height:7px; background:var(--pc,var(--mid))}
+  .pill .dot{width:7px; height:7px; border-radius:50%; background:var(--pc,var(--mid));
+    border:2px solid var(--surface); margin-top:-1px}
+  .ppin.sel .box{transform:scale(1.18); outline:2px solid var(--accent); outline-offset:1px}
+  .ppin.sel{z-index:900 !important}
+
+  .youmark .core{width:15px;height:15px;border-radius:50%;background:var(--you);
+    border:3px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.2),0 2px 6px rgba(0,0,0,.3)}
+  .youmark .halo{position:absolute;left:50%;top:50%;width:15px;height:15px;border-radius:50%;
+    transform:translate(-50%,-50%);background:color-mix(in srgb,var(--you) 35%,transparent);
+    animation:halo 2.6s ease-out infinite}
+  @keyframes halo{0%{opacity:.6;scale:1}70%{opacity:0;scale:4}100%{opacity:0;scale:4}}
+
+  /* ---------- floating buttons ---------- */
+  .fabs{position:absolute; right:12px; z-index:800; display:flex; flex-direction:column; gap:8px;
+    bottom:calc(var(--peek) + 14px); transition:bottom .2s ease}
+  .fab{
+    width:44px; height:44px; border-radius:13px; border:1px solid var(--line);
+    background:var(--surface); color:var(--ink); box-shadow:var(--shadow);
+    display:grid; place-items:center; cursor:pointer; font-size:19px;
+  }
+  .fab:active{transform:scale(.94)}
+  .fab svg{width:20px; height:20px}
+  .fab.locating svg{animation:spin 1.2s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ---------- bottom sheet ---------- */
+  :root{--peek:92px}
+  .sheet{
+    position:absolute; left:0; right:0; bottom:0; top:0; z-index:850;
+    transform:translateY(calc(100% - var(--peek)));
+    background:var(--surface); border-radius:18px 18px 0 0;
+    box-shadow:0 -8px 30px rgba(0,0,0,.28);
+    display:flex; flex-direction:column; touch-action:none;
+    will-change:transform;
+  }
+  .sheet.anim{transition:transform .28s cubic-bezier(.25,.9,.3,1)}
+  .grab{flex:none; padding:9px 16px 6px; cursor:grab; touch-action:none}
+  .grab .handle{width:40px; height:4.5px; border-radius:99px; background:var(--line); margin:0 auto 8px}
+  .grab .row{display:flex; align-items:baseline; justify-content:space-between; gap:8px}
+  .grab .n{font-size:14px; font-weight:680}
+  .grab .cheap{font-size:12px; color:var(--muted)}
+  .grab .cheap b{color:var(--cheap); font-variant-numeric:tabular-nums}
+  .sortrow{flex:none; display:flex; gap:6px; padding:2px 16px 10px}
+  .sort{
+    border:1px solid var(--line); background:var(--surface-2); color:var(--muted);
+    font:inherit; font-size:12px; font-weight:600; padding:6px 12px; border-radius:99px; cursor:pointer;
+  }
+  .sort[aria-pressed="true"]{background:var(--ink); color:var(--surface); border-color:var(--ink)}
+  .list{
+    flex:1; overflow-y:auto; -webkit-overflow-scrolling:touch; overscroll-behavior:contain;
+    padding:0 10px calc(20px + env(safe-area-inset-bottom)); touch-action:pan-y;
+  }
+  .card{
+    display:flex; align-items:center; gap:11px; padding:11px 10px; border-radius:13px;
+    border:1px solid transparent; cursor:pointer; scroll-margin:8px;
+  }
+  .card.sel{background:var(--surface-2); border-color:var(--line)}
+  .card:active{background:var(--surface-2)}
+  .badge{width:42px; height:42px; border-radius:11px; flex:none; display:grid; place-items:center;
+    color:#fff; font-weight:720; font-size:14px; box-shadow:var(--shadow)}
+  .card .info{flex:1; min-width:0}
+  .card .name{font-size:14.5px; font-weight:640; display:flex; align-items:center; gap:6px; white-space:nowrap; overflow:hidden}
+  .tag{font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.4px; color:var(--cheap);
+    background:color-mix(in srgb,var(--cheap) 15%,transparent); padding:2px 6px; border-radius:6px; flex:none}
+  .card .meta{font-size:11.5px; color:var(--muted); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .card .price{text-align:right; flex:none}
+  .card .price .val{font-size:18px; font-weight:750; font-variant-numeric:tabular-nums; color:var(--pc,var(--ink)); line-height:1}
+  .card .price .val small{font-size:9.5px; color:var(--faint); font-weight:600}
+  .card .price .upd{font-size:9.5px; color:var(--faint); margin-top:2px}
+  .nav{flex:none; width:41px; height:41px; border-radius:11px; border:1px solid var(--line);
+    background:var(--surface-2); display:grid; place-items:center; color:var(--accent); text-decoration:none}
+  .nav:active{transform:scale(.93)}
+  .nav svg{width:19px; height:19px}
+  .empty{padding:26px 20px; text-align:center; color:var(--muted); font-size:13px; line-height:1.5}
+
+  .toast{
+    position:absolute; left:50%; bottom:calc(var(--peek) + 18px); transform:translate(-50%,12px);
+    z-index:950; max-width:86%; background:var(--ink); color:var(--bg);
+    font-size:12.5px; font-weight:550; padding:9px 14px; border-radius:11px;
+    box-shadow:var(--shadow-lg); opacity:0; pointer-events:none; transition:.25s;
+  }
+  .toast.show{opacity:1; transform:translate(-50%,0)}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="top">
+  <div class="bar">
+    <img class="logo" src="icons/icon-192.png" alt="" aria-hidden="true">
+    <div class="t">
+      <h1>Fuel Finder</h1>
+      <div class="sub" id="status"><span class="live-dot"></span><span id="statusTxt">Loading live prices…</span></div>
+    </div>
+    <input class="search" id="pc" type="search" inputmode="text" autocomplete="postal-code"
+           placeholder="Postcode" aria-label="Search postcode" enterkeyhint="search">
+  </div>
+  <div class="chips" id="fuelChips" role="group" aria-label="Fuel type">
+    <button class="chip" data-f="e10" aria-pressed="true">Petrol <small>E10</small></button>
+    <button class="chip" data-f="b7" aria-pressed="false">Diesel <small>B7</small></button>
+    <button class="chip" data-f="e5" aria-pressed="false">Super <small>E5</small></button>
+    <button class="chip" data-f="sdv" aria-pressed="false">Premium Diesel <small>SDV</small></button>
+  </div>
+</div>
+
+<div class="fabs">
+  <button class="fab" id="locBtn" aria-label="Go to my location">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+  </button>
+</div>
+
+<div class="sheet anim" id="sheet">
+  <div class="grab" id="grab">
+    <div class="handle"></div>
+    <div class="row">
+      <span class="n" id="count">Nearby stations</span>
+      <span class="cheap" id="cheapNote"></span>
+    </div>
+  </div>
+  <div class="sortrow" role="group" aria-label="Sort">
+    <button class="sort" data-s="price" aria-pressed="true">Cheapest first</button>
+    <button class="sort" data-s="dist" aria-pressed="false">Nearest first</button>
+  </div>
+  <div class="list" id="list"><div class="empty">Loading live prices…</div></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="vendor/leaflet.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  /* ============================== DATA =================================== */
+  // Live data produced by scripts/fetch-prices.mjs from the official UK
+  // retailer price feeds (gov.uk fuel price transparency scheme).
+  var DATA_URLS = [
+    "data/stations.json",
+    "https://raw.githubusercontent.com/andyr1995/Databases/main/docs/data/stations.json"
+  ];
+  var FUEL_LABEL = {e10:"Unleaded E10", b7:"Diesel B7", e5:"Super E5", sdv:"Premium diesel"};
+  var BRAND_COLORS = {
+    "tesco":"#00539f","asda":"#68a51c","asda express":"#68a51c","sainsbury":"#f06c00",
+    "morrisons":"#00623a","bp":"#009b3a","shell":"#dd1d21","esso":"#0055a4",
+    "texaco":"#d3122a","jet":"#e2231a","gulf":"#f36f21","applegreen":"#5aab27",
+    "moto":"#1d3c6e","costco":"#005baa","murco":"#b41f24","valero":"#0072ce"
+  };
+
+  var S = {
+    stations: [],
+    generated: null,
+    fuel: "e10",
+    sort: "price",
+    selId: null,
+    you: null,            // {lat,lng}
+    youAcc: null,
+    listOrigin: null      // where "nearest" is measured from
+  };
+
+  /* ============================== MAP ==================================== */
+  var map = L.map("map", {
+    zoomControl:false, attributionControl:true,
+    center:[54.5,-2.5], zoom:6, maxZoom:18, minZoom:5
+  });
+  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom:19, attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+  }).addTo(map);
+
+  var youMarker=null, youCircle=null;
+  function showYou(lat,lng,acc){
+    if(!youMarker){
+      youMarker=L.marker([lat,lng],{icon:L.divIcon({className:"youmark",
+        html:'<div class="halo"></div><div class="core"></div>',iconSize:[15,15],iconAnchor:[7.5,7.5]}),
+        interactive:false, zIndexOffset:1000}).addTo(map);
+      youCircle=L.circle([lat,lng],{radius:acc||0,weight:1,color:"var(--you)",opacity:.35,fillOpacity:.08,interactive:false}).addTo(map);
+    } else {
+      youMarker.setLatLng([lat,lng]); youCircle.setLatLng([lat,lng]); youCircle.setRadius(acc||0);
+    }
+  }
+
+  /* ---------------- markers: render what's in view, capped --------------- */
+  var markerPool={};   // id -> L.marker
+  var MAX_PINS=150;
+
+  function priceOf(s){ return s[S.fuel]; }
+
+  function colorScale(list){
+    var ps=list.map(priceOf).filter(Boolean).sort(function(a,b){return a-b;});
+    if(!ps.length) return function(){return "var(--mid)";};
+    var lo=ps[Math.floor(ps.length*0.1)], hi=ps[Math.floor(ps.length*0.9)];
+    if(hi<=lo){lo=ps[0]; hi=ps[ps.length-1]||lo+1;}
+    return function(p){
+      var t=Math.max(0,Math.min(1,(p-lo)/((hi-lo)||1)));
+      var c1=[18,161,80],c2=[217,144,0],c3=[229,72,77],a,b,f;
+      if(t<0.5){a=c1;b=c2;f=t*2;}else{a=c2;b=c3;f=(t-0.5)*2;}
+      return "rgb("+Math.round(a[0]+(b[0]-a[0])*f)+","+Math.round(a[1]+(b[1]-a[1])*f)+","+Math.round(a[2]+(b[2]-a[2])*f)+")";
+    };
+  }
+
+  function renderMarkers(){
+    var b=map.getBounds().pad(0.08), c=map.getCenter();
+    var visible=S.stations.filter(function(s){ return priceOf(s)!=null && b.contains([s.lat,s.lng]); });
+    visible.sort(function(x,y){
+      return dist2(c,x)-dist2(c,y);
+    });
+    if(S.selId!=null){
+      var sel=S.stations[S.selId];
+      if(sel && visible.indexOf(sel)===-1) visible.push(sel);
+    }
+    var show=visible.slice(0,MAX_PINS);
+    var want={};
+    var scale=colorScale(show);
+    show.forEach(function(s){ want[s.id]=true; });
+
+    Object.keys(markerPool).forEach(function(id){
+      if(!want[id]){ map.removeLayer(markerPool[id]); delete markerPool[id]; }
+    });
+    show.forEach(function(s){
+      var col=scale(priceOf(s));
+      var html='<div class="pill"><div class="box" style="--pc:'+col+'"><span class="b">'+esc(s.b)+
+        '</span><span class="p">'+priceOf(s).toFixed(1)+'<small>p</small></span></div>'+
+        '<div class="stem" style="--pc:'+col+'"></div><div class="dot" style="--pc:'+col+'"></div></div>';
+      var cls="ppin"+(S.selId===s.id?" sel":"");
+      if(markerPool[s.id]){
+        markerPool[s.id].setIcon(L.divIcon({className:cls,html:html,iconSize:[0,0],iconAnchor:[0,0]}));
+      } else {
+        var m=L.marker([s.lat,s.lng],{icon:L.divIcon({className:cls,html:html,iconSize:[0,0],iconAnchor:[0,0]})});
+        m.on("click",function(){ select(s.id,"map"); });
+        m.addTo(map);
+        markerPool[s.id]=m;
+      }
+    });
+  }
+  var moveT=null;
+  map.on("moveend zoomend",function(){ clearTimeout(moveT); moveT=setTimeout(renderMarkers,60); });
+
+  function dist2(c,s){ var dx=s.lng-c.lng, dy=s.lat-c.lat; return dx*dx*0.38+dy*dy; }
+  function esc(t){ return String(t).replace(/[<>&"]/g,function(ch){return {"<":"&lt;",">":"&gt;","&":"&amp;",'"':"&quot;"}[ch];}); }
+
+  /* ============================== LIST =================================== */
+  function haversineMi(a,b){
+    var R=3958.8,toR=Math.PI/180;
+    var dLat=(b.lat-a.lat)*toR,dLng=(b.lng-a.lng)*toR;
+    var h=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(a.lat*toR)*Math.cos(b.lat*toR)*Math.sin(dLng/2)*Math.sin(dLng/2);
+    return R*2*Math.atan2(Math.sqrt(h),Math.sqrt(1-h));
+  }
+
+  var listEl=document.getElementById("list"), countEl=document.getElementById("count"),
+      cheapEl=document.getElementById("cheapNote");
+
+  function renderList(){
+    var origin=S.listOrigin||S.you||map.getCenter();
+    origin={lat:origin.lat, lng:origin.lng};
+    var withP=S.stations.filter(function(s){return priceOf(s)!=null;});
+    withP.forEach(function(s){ s._mi=haversineMi(origin,s); });
+    var near=withP.filter(function(s){return s._mi<=15;});
+    if(near.length<8){
+      near=withP.slice().sort(function(a,b){return a._mi-b._mi;}).slice(0,25);
+    }
+    if(S.sort==="price") near.sort(function(a,b){return priceOf(a)-priceOf(b)||a._mi-b._mi;});
+    else near.sort(function(a,b){return a._mi-b._mi;});
+    near=near.slice(0,60);
+
+    countEl.textContent=near.length+" stations · "+FUEL_LABEL[S.fuel];
+    if(near.length){
+      var cheapest=near.reduce(function(m,s){return priceOf(s)<priceOf(m)?s:m;});
+      cheapEl.innerHTML='Cheapest <b>'+priceOf(cheapest).toFixed(1)+'p</b>';
+      var scale=colorScale(near);
+      listEl.innerHTML="";
+      near.forEach(function(s){
+        var col=scale(priceOf(s));
+        var card=document.createElement("div");
+        card.className="card"+(S.selId===s.id?" sel":"");
+        card.dataset.id=s.id;
+        card.style.setProperty("--pc",col);
+        var g="https://www.google.com/maps/dir/?api=1&destination="+s.lat+","+s.lng;
+        card.innerHTML=
+          '<div class="badge" style="background:'+brandColor(s.b)+'">'+initials(s.b)+'</div>'+
+          '<div class="info"><div class="name">'+esc(s.b)+(s.id===cheapest.id?' <span class="tag">Cheapest</span>':'')+'</div>'+
+          '<div class="meta">'+s._mi.toFixed(1)+' mi · '+esc(s.a||s.pc)+'</div></div>'+
+          '<div class="price"><div class="val">'+priceOf(s).toFixed(1)+'<small>p</small></div><div class="upd">'+esc(s.pc)+'</div></div>'+
+          '<a class="nav" href="'+g+'" target="_blank" rel="noopener" aria-label="Navigate to '+esc(s.b)+'">'+
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg></a>';
+        card.addEventListener("click",function(ev){
+          if(ev.target.closest(".nav")) return;
+          select(s.id,"list");
+        });
+        listEl.appendChild(card);
+      });
+    } else {
+      listEl.innerHTML='<div class="empty">No priced stations found here yet.<br>Try another fuel type or search a postcode.</div>';
+      cheapEl.textContent="";
+    }
+  }
+
+  function brandColor(b){
+    var k=String(b).toLowerCase();
+    for(var key in BRAND_COLORS){ if(k.indexOf(key)===0) return BRAND_COLORS[key]; }
+    return "#5b6b78";
+  }
+  function initials(b){
+    var w=String(b).replace(/[^A-Za-z ]/g,"").split(" ").filter(Boolean);
+    return ((w.length>1?w[0][0]+w[1][0]:String(b).slice(0,2))||"??").toUpperCase();
+  }
+
+  /* ============================ SELECT ================================== */
+  function select(id, from){
+    S.selId=(S.selId===id)?null:id;
+    renderMarkers();
+    var cards=listEl.querySelectorAll(".card");
+    cards.forEach(function(c){ c.classList.toggle("sel", +c.dataset.id===S.selId); });
+    if(S.selId!=null){
+      var s=S.stations[S.selId];
+      if(from==="list"){
+        map.flyTo([s.lat,s.lng], Math.max(map.getZoom(),14), {duration:0.5});
+        setSheet("half");
+      } else {
+        var card=listEl.querySelector('.card[data-id="'+S.selId+'"]');
+        if(card) card.scrollIntoView({block:"nearest",behavior:"smooth"});
+      }
+    }
+  }
+
+  /* ============================ CONTROLS ================================ */
+  document.getElementById("fuelChips").addEventListener("click",function(e){
+    var b=e.target.closest(".chip"); if(!b) return;
+    this.querySelectorAll(".chip").forEach(function(c){c.setAttribute("aria-pressed", c===b?"true":"false");});
+    S.fuel=b.dataset.f;
+    renderMarkers(); renderList();
+  });
+  document.querySelector(".sortrow").addEventListener("click",function(e){
+    var b=e.target.closest(".sort"); if(!b) return;
+    this.querySelectorAll(".sort").forEach(function(c){c.setAttribute("aria-pressed", c===b?"true":"false");});
+    S.sort=b.dataset.s;
+    renderList();
+  });
+
+  /* postcode search (postcodes.io, CORS-open) */
+  var pcEl=document.getElementById("pc");
+  pcEl.addEventListener("keydown",function(e){
+    if(e.key!=="Enter") return;
+    var q=pcEl.value.trim(); if(!q) return;
+    pcEl.blur();
+    fetch("https://api.postcodes.io/postcodes/"+encodeURIComponent(q))
+      .then(function(r){return r.json();})
+      .then(function(j){
+        if(j.status===200 && j.result){
+          var lat=j.result.latitude, lng=j.result.longitude;
+          S.listOrigin={lat:lat,lng:lng};
+          map.flyTo([lat,lng],13,{duration:0.7});
+          setStatus(esc(j.result.admin_district||q.toUpperCase()));
+          setTimeout(renderList,300);
+        } else toast("Postcode not found — try the full postcode");
+      })
+      .catch(function(){ toast("Couldn’t look up that postcode right now"); });
+  });
+
+  /* ============================ LOCATION ================================ */
+  var locBtn=document.getElementById("locBtn");
+  var hasFix=false, watching=false;
+  function startWatch(fly){
+    if(!navigator.geolocation){ toast("Location isn’t available — search your postcode instead"); return; }
+    locBtn.classList.add("locating");
+    navigator.geolocation.watchPosition(function(pos){
+      locBtn.classList.remove("locating");
+      S.you={lat:pos.coords.latitude,lng:pos.coords.longitude};
+      S.youAcc=pos.coords.accuracy;
+      showYou(S.you.lat,S.you.lng,S.youAcc);
+      if(!hasFix||fly){
+        map.flyTo([S.you.lat,S.you.lng], hasFix?Math.max(map.getZoom(),13):13, {duration:0.8});
+        fly=false;
+      }
+      if(!hasFix){
+        hasFix=true; S.listOrigin=null;
+        setStatus("Your location · live");
+        setTimeout(renderList,400);
+      }
+    },function(err){
+      locBtn.classList.remove("locating");
+      if(!hasFix){
+        setStatus("Location off — search a postcode");
+        if(err && err.code===1) toast("Location blocked. Type a postcode in the search box instead.");
+      }
+    },{enableHighAccuracy:true,maximumAge:5000,timeout:15000});
+    watching=true;
+  }
+  locBtn.addEventListener("click",function(){
+    if(S.you){ S.listOrigin=null; map.flyTo([S.you.lat,S.you.lng],Math.max(map.getZoom(),14),{duration:0.6}); renderList(); }
+    else startWatch(true);
+  });
+
+  function setStatus(t){
+    document.getElementById("statusTxt").innerHTML=t+(S.generated?' · prices '+ago(S.generated):'');
+  }
+  function ago(iso){
+    var m=Math.round((Date.now()-new Date(iso).getTime())/60000);
+    if(m<1) return "just now";
+    if(m<60) return m+" min ago";
+    var h=Math.round(m/60);
+    return h<=48 ? h+" h ago" : Math.round(h/24)+" d ago";
+  }
+
+  var toastEl=document.getElementById("toast"),toastT=null;
+  function toast(m){ toastEl.textContent=m; toastEl.classList.add("show");
+    clearTimeout(toastT); toastT=setTimeout(function(){toastEl.classList.remove("show");},3400); }
+
+  /* ============================ BOTTOM SHEET ============================ */
+  var sheet=document.getElementById("sheet"), grab=document.getElementById("grab");
+  var vh=window.innerHeight;
+  var SNAPS={}; // translateY values
+  function calcSnaps(){
+    vh=window.innerHeight;
+    SNAPS={peek:vh-92, half:Math.round(vh*0.52), full:Math.round(vh*0.12)};
+  }
+  calcSnaps();
+  var sheetPos="peek", curY=null;
+
+  function setSheet(pos){
+    sheetPos=pos; sheet.classList.add("anim");
+    sheet.style.transform="translateY("+SNAPS[pos]+"px)";
+    document.documentElement.style.setProperty("--peek",(vh-SNAPS[pos]>vh*0.7? vh*0.7 : vh-SNAPS[pos])+"px");
+  }
+  // initialise to peek
+  sheet.style.transform="translateY("+SNAPS.peek+"px)";
+
+  var drag=null;
+  function dragStart(y){
+    drag={startY:y, base:SNAPS[sheetPos], moved:false};
+    sheet.classList.remove("anim");
+  }
+  function dragMove(y){
+    if(!drag) return;
+    var dy=y-drag.startY;
+    if(Math.abs(dy)>4) drag.moved=true;
+    var ny=Math.max(SNAPS.full-30, Math.min(vh-70, drag.base+dy));
+    curY=ny;
+    sheet.style.transform="translateY("+ny+"px)";
+  }
+  function dragEnd(vy){
+    if(!drag) return;
+    var y=curY!=null?curY:SNAPS[sheetPos];
+    var target="peek", best=1e9;
+    for(var k in SNAPS){
+      var d=Math.abs(SNAPS[k]-y) - (vy? (SNAPS[k]<y?vy*120:-vy*120):0);
+      if(d<best){best=d; target=k;}
+    }
+    var wasTap=!drag.moved;
+    drag=null; curY=null;
+    if(wasTap){ setSheet(sheetPos==="peek"?"half":(sheetPos==="half"?"full":"peek")); return; }
+    setSheet(target);
+  }
+  var lastY=null,lastT=null,velo=0;
+  grab.addEventListener("pointerdown",function(e){
+    grab.setPointerCapture(e.pointerId);
+    dragStart(e.clientY); lastY=e.clientY; lastT=performance.now(); velo=0;
+  });
+  grab.addEventListener("pointermove",function(e){
+    if(!drag) return;
+    var t=performance.now();
+    if(lastT!=null && t>lastT) velo=(e.clientY-lastY)/(t-lastT);
+    lastY=e.clientY; lastT=t;
+    dragMove(e.clientY);
+  });
+  grab.addEventListener("pointerup",function(){ dragEnd(-velo); });
+  grab.addEventListener("pointercancel",function(){ dragEnd(0); });
+
+  // dragging down from the list when it's scrolled to the top collapses the sheet
+  var listTouch=null;
+  listEl.addEventListener("touchstart",function(e){
+    listTouch={y:e.touches[0].clientY, top:listEl.scrollTop<=0, active:false};
+  },{passive:true});
+  listEl.addEventListener("touchmove",function(e){
+    if(!listTouch) return;
+    var dy=e.touches[0].clientY-listTouch.y;
+    if(listTouch.top && dy>6 && sheetPos!=="peek"){
+      if(!listTouch.active){ listTouch.active=true; dragStart(listTouch.y); }
+      dragMove(e.touches[0].clientY);
+      e.preventDefault();
+    }
+  },{passive:false});
+  listEl.addEventListener("touchend",function(){
+    if(listTouch && listTouch.active) dragEnd(0);
+    listTouch=null;
+  });
+
+  window.addEventListener("resize",function(){
+    calcSnaps(); setSheet(sheetPos); map.invalidateSize();
+  });
+
+  /* ============================== BOOT ================================== */
+  function loadData(i){
+    i=i||0;
+    if(i>=DATA_URLS.length){
+      setStatus("Couldn’t load live prices");
+      listEl.innerHTML='<div class="empty">Couldn’t load live price data.<br>Check your connection and reload.</div>';
+      return;
+    }
+    fetch(DATA_URLS[i],{cache:"no-cache"})
+      .then(function(r){ if(!r.ok) throw 0; return r.json(); })
+      .then(function(j){
+        S.generated=j.generated;
+        S.stations=j.stations.map(function(s,idx){ s.id=idx; return s; });
+        setStatus(hasFix?"Your location · live":"Finding you…");
+        renderMarkers(); renderList();
+        toast(j.count+" UK stations · prices "+ago(j.generated));
+      })
+      .catch(function(){ loadData(i+1); });
+  }
+  loadData();
+  startWatch(false);
+})();
+</script>
+</body>
+</html>
