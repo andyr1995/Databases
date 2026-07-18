@@ -1,16 +1,27 @@
-name: Update fuel prices
+name: Update fuel prices and deploy
 
 on:
   schedule:
     - cron: "*/30 * * * *"   # every 30 minutes (runs on the default branch only)
+  push:
+    branches: [main]
   workflow_dispatch: {}       # manual "Run workflow" button
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
-  update:
+  update-and-deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -18,17 +29,26 @@ jobs:
         with:
           node-version: 22
 
-      - name: Fetch latest prices from retailer feeds
+      # The full Fuel Finder base is ~110 MB of CSV; the parsed result is cached
+      # between runs and only re-downloaded when older than the script's TTL.
+      - name: Restore Fuel Finder base cache
+        uses: actions/cache@v4
+        with:
+          path: docs/data/ff-base.json
+          key: ff-base-${{ github.run_id }}
+          restore-keys: ff-base-
+
+      - name: Fetch latest prices
         run: node scripts/fetch-prices.mjs
 
-      - name: Commit updated data
-        run: |
-          git config user.name "fuel-price-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add docs/data/stations.json
-          if git diff --cached --quiet; then
-            echo "No price changes."
-          else
-            git commit -m "Update fuel prices ($(date -u +'%Y-%m-%d %H:%M UTC'))"
-            git push
-          fi
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
