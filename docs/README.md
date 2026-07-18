@@ -18,27 +18,29 @@ HTTPS hosting also unlocks browser geolocation, so the app can follow you live.
 
 ## Where the prices come from
 
-UK retailers publish their pump prices as open JSON feeds under the
-[gov.uk fuel price transparency scheme](https://www.gov.uk/guidance/access-fuel-price-data).
-`scripts/fetch-prices.mjs` pulls every feed, drops any feed whose data is more
-than 7 days stale, normalises prices (E10 / E5 / B7 / SDV, pence per litre),
-de-duplicates sites, and writes `docs/data/stations.json`.
+Since February 2026, every UK fuel retailer is legally required to report price
+changes within 30 minutes to the statutory **Fuel Finder** open data scheme
+(Motor Fuel Price (Open Data) Regulations 2025). `scripts/fetch-prices.mjs`
+builds the dataset in two layers:
 
-Currently-live feeds include Asda, Esso, Morrisons-branded MFG sites, Moto,
-Jet, SGN and the Motor Fuel Group feed (which carries many BP / Shell / Texaco
-branded forecourts). Feeds that are stale or blocked are skipped automatically
-and logged.
+1. **Base — the full country.** The complete Fuel Finder dataset (~8,000+
+   stations) via FuelCosts.co.uk's free mirror of the official data (the
+   gov.uk portal blocks requests from servers). The two CSVs are ~110 MB, so
+   the parsed result is cached (`docs/data/ff-base.json`, gitignored; cached
+   between CI runs) and refreshed every 6 hours.
+2. **Overlay — extra freshness.** The retailers' own direct feeds (Asda, Esso,
+   MFG, Moto, Jet, SGN, …) still update continuously; their prices are merged
+   on top by location (within 150 m = same forecourt).
 
-Refresh the data any time:
+Prices older than 30 days and closed stations are dropped. Refresh manually:
 
 ```
 node scripts/fetch-prices.mjs
 ```
 
-`.github/workflows/update-prices.yml` does this automatically every 30 minutes
-— note GitHub only runs scheduled workflows on the **default branch**, so merge
-this branch to `main` (or trigger it manually from the Actions tab) for
-auto-refresh.
+`.github/workflows/update-prices.yml` runs this every 30 minutes and deploys
+`docs/` straight to GitHub Pages — the data is never committed to git, so the
+repo stays small while the live site stays fresh.
 
 ## Files
 
@@ -48,7 +50,7 @@ auto-refresh.
 | `docs/vendor/`              | Leaflet 1.9.4 (no CDN dependency).         |
 | `docs/data/stations.json`   | Latest aggregated prices.                  |
 | `scripts/fetch-prices.mjs`  | Price feed aggregator.                     |
-| `.github/workflows/update-prices.yml` | 30-minute auto-refresh.          |
+| `.github/workflows/update-prices.yml` | 30-minute refresh + Pages deploy.   |
 
 Map data © OpenStreetMap contributors. Price data © the respective retailers,
 published under the UK fuel price transparency scheme.
