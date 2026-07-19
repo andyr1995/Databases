@@ -29,12 +29,15 @@ jobs:
         with:
           node-version: 22
 
-      # The full Fuel Finder base is ~110 MB of CSV; the parsed result is cached
-      # between runs and only re-downloaded when older than the script's TTL.
-      - name: Restore Fuel Finder base cache
+      # The full Fuel Finder base is ~110 MB of CSV and the OSM layer is a large
+      # Overpass query; the parsed results are cached between runs and only
+      # re-fetched when older than the script's TTLs (6h / 7d).
+      - name: Restore parsed data caches
         uses: actions/cache@v4
         with:
-          path: docs/data/ff-base.json
+          path: |
+            docs/data/ff-base.json
+            docs/data/osm-base.json
           key: ff-base-${{ github.run_id }}
           restore-keys: ff-base-
 
