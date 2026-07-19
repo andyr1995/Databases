@@ -31,13 +31,21 @@ import { createInterface } from "node:readline";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "docs", "data", "stations.json");
 const BASE_CACHE = join(ROOT, "docs", "data", "ff-base.json");
+const OSM_CACHE = join(ROOT, "docs", "data", "osm-base.json");
 const BASE_TTL_H = 6;           // refetch the ~110MB base CSVs at most every 6h
-const MAX_PRICE_AGE_DAYS = 30;  // drop prices older than this
+const OSM_TTL_H = 24 * 7;       // stations don't move; refresh OSM weekly
+const MAX_PRICE_AGE_DAYS = 365; // keep prices up to a year, app shows their age
 const MAX_FEED_AGE_DAYS = 7;    // drop overlay feeds staler than this
 const UA = "Mozilla/5.0 (FuelFinder personal project)";
 
 const FF_STATIONS_URL = "https://fuelcosts.co.uk/api/download/stations";
 const FF_PRICES_URL = "https://fuelcosts.co.uk/api/download/price-history";
+const OVERPASS_ENDPOINTS = [
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.kumi.systems/api/interpreter",
+];
+const OVERPASS_QUERY = '[out:json][timeout:300];area["ISO3166-1"="GB"][admin_level="2"]->.uk;nwr["amenity"="fuel"](area.uk);out center tags;';
 
 /** Retailer direct feeds (legacy CMA scheme URLs — still live and fast). */
 const FEEDS = [
@@ -211,16 +219,79 @@ async function buildBase() {
 
   const cutoff = Date.now() - MAX_PRICE_AGE_DAYS * 86400000;
   const stations = [];
+  let priced = 0;
   for (const st of byNode.values()) {
+    let newest = 0;
     for (const k of ["e10", "e5", "b7", "sdv"]) {
       if (st[k] != null && st._t[k] < cutoff) st[k] = null;
+      if (st[k] != null && st._t[k] > newest) newest = st._t[k];
     }
-    if (st.e10 == null && st.b7 == null && st.e5 == null && st.sdv == null) continue;
+    // Stations that have never reported a price still exist — keep them.
     const rec = { b: st.b, a: st.a, pc: st.pc, lat: st.lat, lng: st.lng, e10: st.e10, e5: st.e5, b7: st.b7, sdv: st.sdv };
+    if (newest) { rec.u = new Date(newest).toISOString().slice(0, 10); priced++; }
     stations.push(rec);
   }
-  console.error(`BASE  stations with current prices: ${stations.length}`);
+  console.error(`BASE  stations kept: ${stations.length} (${priced} with prices)`);
   return { fetched: new Date().toISOString(), stations };
+}
+
+/* ------------------- layer 3: OpenStreetMap stations -------------------- */
+
+async function buildOsm() {
+  let body = null;
+  for (const ep of OVERPASS_ENDPOINTS) {
+    try {
+      console.error(`OSM   querying ${new URL(ep).host}…`);
+      body = execFileSync("curl", ["-s", "--fail", "--max-time", "360", "-A", UA,
+        "-X", "POST", ep, "--data-urlencode", `data=${OVERPASS_QUERY}`],
+        { maxBuffer: 256 << 20, encoding: "utf8" });
+      const parsed = JSON.parse(body);
+      if (!parsed.elements?.length) throw new Error("empty result");
+      const stations = [];
+      for (const e of parsed.elements) {
+        const lat = e.lat ?? e.center?.lat, lng = e.lon ?? e.center?.lon;
+        if (lat == null || lng == null || !inUK(lat, lng)) continue;
+        const t = e.tags || {};
+        if (t.access === "private" || t.fuel === "electric") continue;
+        stations.push({
+          b: tidyBrand(t.brand || t.operator || t.name || "Fuel station"),
+          a: tidyName(t.name || [t["addr:housenumber"], t["addr:street"]].filter(Boolean).join(" ")) || "",
+          pc: (t["addr:postcode"] || "").toUpperCase(),
+          lat: Math.round(lat * 1e5) / 1e5,
+          lng: Math.round(lng * 1e5) / 1e5,
+        });
+      }
+      console.error(`OSM   stations: ${stations.length}`);
+      return { fetched: new Date().toISOString(), stations };
+    } catch (err) {
+      console.error(`OSM   ${new URL(ep).host} failed: ${err.message?.slice(0, 120)}`);
+    }
+  }
+  return null;
+}
+
+async function loadOsm() {
+  if (existsSync(OSM_CACHE)) {
+    try {
+      const cached = JSON.parse(readFileSync(OSM_CACHE, "utf8"));
+      const ageH = (Date.now() - Date.parse(cached.fetched)) / 3600000;
+      if (ageH < OSM_TTL_H && cached.stations?.length > 4000) {
+        console.error(`OSM   using cache (${(ageH / 24).toFixed(1)}d old, ${cached.stations.length} stations)`);
+        return cached;
+      }
+    } catch { /* rebuild below */ }
+  }
+  const osm = await buildOsm();
+  if (osm && osm.stations.length > 4000) {
+    mkdirSync(dirname(OSM_CACHE), { recursive: true });
+    writeFileSync(OSM_CACHE, JSON.stringify(osm));
+    return osm;
+  }
+  // fall back to a stale cache rather than nothing
+  if (existsSync(OSM_CACHE)) {
+    try { return JSON.parse(readFileSync(OSM_CACHE, "utf8")); } catch { /* ignore */ }
+  }
+  return { fetched: null, stations: [] };
 }
 
 async function loadBase() {
@@ -316,62 +387,90 @@ for (let i = 0; i < results.length; i++) {
   overlay.push(...stations);
 }
 
-// Merge: base first; an overlay station within ~150m of a base station is the
-// same forecourt (retailer feeds and the scheme publish slightly different
-// GPS fixes), so refresh its prices. Anything genuinely new is added.
+// Merge: base first; overlay refreshes matching forecourts; OSM adds any
+// physical station neither source knows about.
 const GRID = 800; // ~140m cells
-const coarse = new Map();
-for (const s of base.stations) {
-  const k = `${Math.round(s.lat * GRID)}:${Math.round(s.lng * GRID)}`;
-  (coarse.get(k) || coarse.set(k, []).get(k)).push(s);
-}
-function nearestBase(s) {
-  const cy = Math.round(s.lat * GRID), cx = Math.round(s.lng * GRID);
-  let best = null, bestD = Infinity;
-  for (let dy = -1; dy <= 1; dy++) {
-    for (let dx = -1; dx <= 1; dx++) {
-      for (const c of coarse.get(`${cy + dy}:${cx + dx}`) || []) {
-        const dLat = (c.lat - s.lat) * 111320;
-        const dLng = (c.lng - s.lng) * 111320 * 0.62; // cos(52°)
-        const d = Math.hypot(dLat, dLng);
-        if (d < bestD) { bestD = d; best = c; }
+
+function makeIndex(list) {
+  const coarse = new Map();
+  const add = (s) => {
+    const k = `${Math.round(s.lat * GRID)}:${Math.round(s.lng * GRID)}`;
+    const arr = coarse.get(k) || [];
+    arr.push(s);
+    coarse.set(k, arr);
+  };
+  list.forEach(add);
+  return {
+    add,
+    nearest(s) {
+      const cy = Math.round(s.lat * GRID), cx = Math.round(s.lng * GRID);
+      let best = null, bestD = Infinity;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          for (const c of coarse.get(`${cy + dy}:${cx + dx}`) || []) {
+            const dLat = (c.lat - s.lat) * 111320;
+            const dLng = (c.lng - s.lng) * 111320 * 0.62; // cos(52°)
+            const d = Math.hypot(dLat, dLng);
+            if (d < bestD) { bestD = d; best = c; }
+          }
+        }
       }
-    }
-  }
-  return bestD <= 150 ? best : null;
+      return { station: best, dist: bestD };
+    },
+  };
 }
-let refreshed = 0, added = 0;
-const extras = [];
+
+const sameBrand = (a, b) => {
+  const ka = String(a).toLowerCase().split(/[\s']/)[0], kb = String(b).toLowerCase().split(/[\s']/)[0];
+  return ka && kb && (ka === kb || ka.startsWith(kb) || kb.startsWith(ka));
+};
+
+const stations = [...base.stations];
+const index = makeIndex(stations);
+const today = new Date().toISOString().slice(0, 10);
+
+// Overlay feeds: same brand within 150m (GPS drift) is the same forecourt;
+// different brands must be within 50m to count as the same site.
+let refreshed = 0, addedFeed = 0;
 for (const s of overlay) {
-  const hit = nearestBase(s);
-  if (hit) {
+  const { station: hit, dist } = index.nearest(s);
+  if (hit && (dist <= 50 || (dist <= 150 && sameBrand(s.b, hit.b)))) {
     for (const k of ["e10", "e5", "b7", "sdv"]) if (s[k] != null) hit[k] = s[k];
+    hit.u = today;
     refreshed++;
   } else {
-    extras.push(s);
-    added++;
+    s.u = today;
+    stations.push(s);
+    index.add(s);
+    addedFeed++;
   }
 }
-console.error(`MERGE overlay refreshed ${refreshed}, added ${added}`);
+console.error(`MERGE overlay refreshed ${refreshed}, added ${addedFeed}`);
 
-// De-dupe the extras against each other too.
-const seen = new Set();
-const dedupedExtras = extras.filter((s) => {
-  const k = cellKey(s.lat, s.lng);
-  if (seen.has(k)) return false;
-  seen.add(k);
-  return true;
-});
-
-const stations = [...base.stations, ...dedupedExtras];
+// OSM completeness layer: add stations with no counterpart within 120m.
+// They carry no prices — the app shows them as "no price reported".
+const osm = await loadOsm();
+let addedOsm = 0;
+for (const s of osm.stations) {
+  const { dist } = index.nearest(s);
+  if (dist <= 120) continue;
+  stations.push({ b: s.b, a: s.a, pc: s.pc, lat: s.lat, lng: s.lng, e10: null, e5: null, b7: null, sdv: null });
+  index.add(s);
+  addedOsm++;
+}
+console.error(`MERGE OSM added ${addedOsm} unpriced stations`);
 if (stations.length < 500) {
   console.error(`ABORT: only ${stations.length} stations collected — refusing to overwrite good data.`);
   process.exit(1);
 }
 
+sources.push({ retailer: "OpenStreetMap (physical stations)", ok: osm.stations.length > 0, count: addedOsm, updated: osm.fetched });
+
+const pricedCount = stations.filter((s) => s.e10 != null || s.e5 != null || s.b7 != null || s.sdv != null).length;
 const out = {
   generated: new Date().toISOString(),
   count: stations.length,
+  priced: pricedCount,
   sources,
   stations,
 };

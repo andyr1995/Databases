@@ -113,6 +113,12 @@
     border:2px solid var(--surface); margin-top:-1px}
   .ppin.sel .box{transform:scale(1.18); outline:2px solid var(--accent); outline-offset:1px}
   .ppin.sel{z-index:900 !important}
+  .mini{
+    position:absolute; left:50%; top:50%; transform:translate(-50%,-50%);
+    width:11px; height:11px; border-radius:50%; background:var(--faint);
+    border:2px solid var(--surface); box-shadow:0 1px 3px rgba(0,0,0,.3); cursor:pointer;
+  }
+  .ppin.sel .mini{outline:2px solid var(--accent); outline-offset:1px; background:var(--muted)}
 
   .youmark .core{width:15px;height:15px;border-radius:50%;background:var(--you);
     border:3px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.2),0 2px 6px rgba(0,0,0,.3)}
@@ -297,7 +303,13 @@
   var markerPool={};   // id -> L.marker
   var MAX_PINS=150;
 
-  function priceOf(s){ return s[S.fuel]; }
+  // A price only counts as current if reported within the last 7 days.
+  // Older prices would win "cheapest" dishonestly; they're shown as
+  // "last known" on the station's card instead.
+  var FRESH_DAYS=7;
+  function isFresh(s){ return s.u && (Date.now()-Date.parse(s.u))<=FRESH_DAYS*86400000; }
+  function priceOf(s){ return isFresh(s) ? s[S.fuel] : null; }
+  function lastKnown(s){ return s[S.fuel]; }
 
   function colorScale(list){
     var ps=list.map(priceOf).filter(Boolean).sort(function(a,b){return a-b;});
@@ -314,28 +326,29 @@
 
   function renderMarkers(){
     var b=map.getBounds().pad(0.08), c=map.getCenter();
-    var visible=S.stations.filter(function(s){ return priceOf(s)!=null && b.contains([s.lat,s.lng]); });
-    visible.sort(function(x,y){
-      return dist2(c,x)-dist2(c,y);
-    });
+    var inView=S.stations.filter(function(s){ return b.contains([s.lat,s.lng]); });
+    var priced=[], unpriced=[];
+    inView.forEach(function(s){ (priceOf(s)!=null?priced:unpriced).push(s); });
+    var byDist=function(x,y){ return dist2(c,x)-dist2(c,y); };
+    priced.sort(byDist); unpriced.sort(byDist);
+
+    var show=priced.slice(0,MAX_PINS);
+    // stations with no price for this fuel appear as small grey dots when zoomed in
+    var dots=map.getZoom()>=11 ? unpriced.slice(0,120) : [];
     if(S.selId!=null){
       var sel=S.stations[S.selId];
-      if(sel && visible.indexOf(sel)===-1) visible.push(sel);
+      if(sel && show.indexOf(sel)===-1 && dots.indexOf(sel)===-1){
+        (priceOf(sel)!=null?show:dots).push(sel);
+      }
     }
-    var show=visible.slice(0,MAX_PINS);
     var want={};
     var scale=colorScale(show);
-    show.forEach(function(s){ want[s.id]=true; });
+    show.concat(dots).forEach(function(s){ want[s.id]=true; });
 
     Object.keys(markerPool).forEach(function(id){
       if(!want[id]){ map.removeLayer(markerPool[id]); delete markerPool[id]; }
     });
-    show.forEach(function(s){
-      var col=scale(priceOf(s));
-      var html='<div class="pill"><div class="box" style="--pc:'+col+'"><span class="b">'+esc(s.b)+
-        '</span><span class="p">'+priceOf(s).toFixed(1)+'<small>p</small></span></div>'+
-        '<div class="stem" style="--pc:'+col+'"></div><div class="dot" style="--pc:'+col+'"></div></div>';
-      var cls="ppin"+(S.selId===s.id?" sel":"");
+    function place(s, html, cls){
       if(markerPool[s.id]){
         markerPool[s.id].setIcon(L.divIcon({className:cls,html:html,iconSize:[0,0],iconAnchor:[0,0]}));
       } else {
@@ -344,6 +357,16 @@
         m.addTo(map);
         markerPool[s.id]=m;
       }
+    }
+    show.forEach(function(s){
+      var col=scale(priceOf(s));
+      var html='<div class="pill"><div class="box" style="--pc:'+col+'"><span class="b">'+esc(s.b)+
+        '</span><span class="p">'+priceOf(s).toFixed(1)+'<small>p</small></span></div>'+
+        '<div class="stem" style="--pc:'+col+'"></div><div class="dot" style="--pc:'+col+'"></div></div>';
+      place(s, html, "ppin"+(S.selId===s.id?" sel":""));
+    });
+    dots.forEach(function(s){
+      place(s, '<div class="mini"></div>', "ppin"+(S.selId===s.id?" sel":""));
     });
   }
   var moveT=null;
@@ -363,10 +386,17 @@
   var listEl=document.getElementById("list"), countEl=document.getElementById("count"),
       cheapEl=document.getElementById("cheapNote");
 
+  function priceAge(s){
+    if(!s.u) return null;
+    var d=Math.floor((Date.now()-Date.parse(s.u))/86400000);
+    return d>=3 ? d : null;
+  }
+
   function renderList(){
     var origin=S.listOrigin||S.you||map.getCenter();
     origin={lat:origin.lat, lng:origin.lng};
-    var withP=S.stations.filter(function(s){return priceOf(s)!=null;});
+    var withP=[], noP=[];
+    S.stations.forEach(function(s){ (priceOf(s)!=null?withP:noP).push(s); });
     withP.forEach(function(s){ s._mi=haversineMi(origin,s); });
     var near=withP.filter(function(s){return s._mi<=15;});
     if(near.length<8){
@@ -376,7 +406,11 @@
     else near.sort(function(a,b){return a._mi-b._mi;});
     near=near.slice(0,60);
 
-    countEl.textContent=near.length+" stations · "+FUEL_LABEL[S.fuel];
+    noP.forEach(function(s){ s._mi=haversineMi(origin,s); });
+    var nearNoP=noP.filter(function(s){return s._mi<=8;})
+      .sort(function(a,b){return a._mi-b._mi;}).slice(0,25);
+
+    countEl.textContent=near.length+" priced · "+FUEL_LABEL[S.fuel];
     if(near.length){
       var cheapest=near.reduce(function(m,s){return priceOf(s)<priceOf(m)?s:m;});
       cheapEl.innerHTML='Cheapest <b>'+priceOf(cheapest).toFixed(1)+'p</b>';
@@ -393,9 +427,8 @@
           '<div class="badge" style="background:'+brandColor(s.b)+'">'+initials(s.b)+'</div>'+
           '<div class="info"><div class="name">'+esc(s.b)+(s.id===cheapest.id?' <span class="tag">Cheapest</span>':'')+'</div>'+
           '<div class="meta">'+s._mi.toFixed(1)+' mi · '+esc(s.a||s.pc)+'</div></div>'+
-          '<div class="price"><div class="val">'+priceOf(s).toFixed(1)+'<small>p</small></div><div class="upd">'+esc(s.pc)+'</div></div>'+
-          '<a class="nav" href="'+g+'" target="_blank" rel="noopener" aria-label="Navigate to '+esc(s.b)+'">'+
-          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg></a>';
+          '<div class="price"><div class="val">'+priceOf(s).toFixed(1)+'<small>p</small></div><div class="upd">'+(priceAge(s)!=null?priceAge(s)+'d old':esc(s.pc))+'</div></div>'+
+          '<a class="nav" href="'+g+'" target="_blank" rel="noopener" aria-label="Navigate to '+esc(s.b)+'">'+navSvg()+'</a>';
         card.addEventListener("click",function(ev){
           if(ev.target.closest(".nav")) return;
           select(s.id,"list");
@@ -406,7 +439,36 @@
       listEl.innerHTML='<div class="empty">No priced stations found here yet.<br>Try another fuel type or search a postcode.</div>';
       cheapEl.textContent="";
     }
+
+    if(nearNoP.length){
+      var hdr=document.createElement("div");
+      hdr.className="empty"; hdr.style.padding="16px 16px 6px"; hdr.style.textAlign="left"; hdr.style.fontSize="11.5px";
+      hdr.textContent="No reported price yet — still shown so you can navigate:";
+      listEl.appendChild(hdr);
+      nearNoP.forEach(function(s){
+        var card=document.createElement("div");
+        card.className="card"+(S.selId===s.id?" sel":"");
+        card.dataset.id=s.id;
+        var g="https://www.google.com/maps/dir/?api=1&destination="+s.lat+","+s.lng;
+        var lk=lastKnown(s), lkAge=s.u?Math.floor((Date.now()-Date.parse(s.u))/86400000):null;
+        var sub = lk!=null && lkAge!=null ? "last "+lk.toFixed(1)+"p · "+(lkAge>=60?Math.round(lkAge/30)+"mo":lkAge+"d")+" ago"
+                : (s.e10!=null||s.e5!=null||s.b7!=null||s.sdv!=null) ? "not this fuel" : "no data";
+        card.innerHTML=
+          '<div class="badge" style="background:'+brandColor(s.b)+'">'+initials(s.b)+'</div>'+
+          '<div class="info"><div class="name">'+esc(s.b)+'</div>'+
+          '<div class="meta">'+s._mi.toFixed(1)+' mi · '+esc(s.a||s.pc||"Fuel station")+'</div></div>'+
+          '<div class="price"><div class="val" style="color:var(--faint)">&mdash;</div><div class="upd">'+sub+'</div></div>'+
+          '<a class="nav" href="'+g+'" target="_blank" rel="noopener" aria-label="Navigate to '+esc(s.b)+'">'+navSvg()+'</a>';
+        card.addEventListener("click",function(ev){
+          if(ev.target.closest(".nav")) return;
+          select(s.id,"list");
+        });
+        listEl.appendChild(card);
+      });
+    }
   }
+
+  function navSvg(){ return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l19-9-9 19-2-8-8-2z"/></svg>'; }
 
   function brandColor(b){
     var k=String(b).toLowerCase();
