@@ -1,0 +1,940 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#12324d" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#080c10" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Rail Live">
+<meta name="description" content="Live map of passenger and freight trains moving in real time, with GPS positions, speed and delays.">
+<title>Rail Live — passenger &amp; freight trains, live on a map</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%2312324d'/%3E%3Cpath d='M22 14h20a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H22a6 6 0 0 1-6-6V20a6 6 0 0 1 6-6z' fill='%2340d6c8'/%3E%3Crect x='21' y='20' width='22' height='11' rx='2' fill='%2312324d'/%3E%3Ccircle cx='25' cy='38' r='3' fill='%2312324d'/%3E%3Ccircle cx='39' cy='38' r='3' fill='%2312324d'/%3E%3Cpath d='M20 48l-5 6M44 48l5 6' stroke='%2340d6c8' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="../vendor/leaflet.css">
+<style>
+  :root{
+    --bg:#e8edf1; --surface:#ffffff; --surface-2:#f2f6f9;
+    --ink:#0d151c; --muted:#5a6b78; --faint:#8795a1; --line:#d9e2e8;
+    --accent:#0e7490; --on-accent:#ffffff;
+    --pax:#2563eb;        /* passenger */
+    --pax-long:#7c3aed;   /* long distance */
+    --cargo:#ea7317;      /* freight */
+    --other:#64748b;      /* shunting / engineering */
+    --ontime:#12a150; --late:#e5484d; --you:#1f7ae0;
+    --shadow:0 1px 2px rgba(16,32,40,.10),0 6px 18px rgba(16,32,40,.12);
+    --shadow-lg:0 10px 34px rgba(16,32,40,.22);
+    --tile-filter:none;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#080c10; --surface:#131a21; --surface-2:#1b242c;
+      --ink:#e9f1f6; --muted:#90a0ac; --faint:#5d6b77; --line:#28333c;
+      --accent:#2dd4bf; --on-accent:#04211f;
+      --pax:#5b9dff; --pax-long:#a78bfa; --cargo:#ff9f45; --other:#94a3b8;
+      --ontime:#31c46a; --late:#ff6b6f; --you:#4c9bff;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 6px 18px rgba(0,0,0,.45);
+      --shadow-lg:0 12px 36px rgba(0,0,0,.6);
+      --tile-filter:brightness(.7) saturate(.35) hue-rotate(180deg) invert(1) brightness(.92) hue-rotate(180deg);
+    }
+  }
+
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  html,body{height:100%; margin:0; overscroll-behavior:none}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; overflow:hidden;
+    position:fixed; inset:0; touch-action:none;
+  }
+  #map{position:absolute; inset:0; background:var(--bg); touch-action:none}
+  .leaflet-tile{filter:var(--tile-filter)}
+  .leaflet-control-attribution{
+    font-size:9px !important;
+    background:color-mix(in srgb,var(--surface) 75%,transparent) !important;
+    color:var(--faint) !important;
+  }
+  .leaflet-control-attribution a{color:var(--muted) !important}
+  /* keep the attribution and scale bar clear of the bottom sheet */
+  .leaflet-bottom{bottom:var(--sheet-h,148px); transition:bottom .18s ease}
+
+  /* trains are drawn on one canvas for smooth 60fps motion */
+  #trains{position:absolute; inset:0; z-index:400; pointer-events:none}
+  #trains.hide{opacity:0}
+
+  /* ---------- top bar ---------- */
+  .top{
+    position:absolute; left:0; right:0; top:0; z-index:800;
+    padding:calc(10px + env(safe-area-inset-top)) 12px 0; pointer-events:none;
+    display:flex; flex-direction:column; gap:8px;
+  }
+  .top>*{pointer-events:auto}
+  .bar{
+    display:flex; align-items:center; gap:9px; background:var(--surface);
+    border:1px solid var(--line); border-radius:14px; padding:8px 10px;
+    box-shadow:var(--shadow);
+  }
+  .logo{width:32px;height:32px;border-radius:9px;flex:none;display:block}
+  .t{display:flex; flex-direction:column; line-height:1.15; min-width:0; flex:1}
+  .t h1{margin:0; font-size:15px; font-weight:680; letter-spacing:-.2px}
+  .t .sub{font-size:11px; color:var(--muted); display:flex; align-items:center; gap:5px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:var(--ontime);flex:none;animation:live 2s ease-out infinite}
+  .live-dot.stale{background:var(--late);animation:none}
+  @keyframes live{
+    0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--ontime) 60%,transparent)}
+    70%{box-shadow:0 0 0 6px transparent}
+    100%{box-shadow:0 0 0 0 transparent}
+  }
+  .search{
+    border:0; background:var(--surface-2); border-radius:9px; padding:7px 10px;
+    font:inherit; font-size:13px; color:var(--ink); width:104px; min-width:0;
+  }
+  .search::placeholder{color:var(--faint)}
+
+  .chips{display:flex; gap:7px; overflow-x:auto; scrollbar-width:none; padding-bottom:2px}
+  .chips::-webkit-scrollbar{display:none}
+  .chip{
+    display:inline-flex; align-items:center; gap:6px; flex:none; cursor:pointer;
+    background:var(--surface); border:1px solid var(--line); color:var(--muted);
+    border-radius:999px; padding:6px 11px; font-size:12.5px; font-weight:600;
+    box-shadow:var(--shadow); user-select:none; transition:background .12s,color .12s,border-color .12s;
+  }
+  .chip .sw{width:9px;height:9px;border-radius:3px;flex:none}
+  .chip .n{font-variant-numeric:tabular-nums; opacity:.75; font-weight:600}
+  .chip[aria-pressed="true"]{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+  .chip[aria-pressed="true"] .n{opacity:.7}
+
+  /* ---------- map buttons ---------- */
+  .fabs{position:absolute; right:12px; z-index:790; display:flex; flex-direction:column; gap:8px;
+    bottom:calc(var(--sheet-h,148px) + 14px); transition:bottom .18s ease}
+  .fab{
+    width:42px;height:42px;border-radius:12px;border:1px solid var(--line);
+    background:var(--surface); color:var(--ink); box-shadow:var(--shadow);
+    display:grid;place-items:center;cursor:pointer;padding:0;
+  }
+  .fab svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.9;
+    stroke-linecap:round;stroke-linejoin:round}
+  .fab.on{background:var(--accent); color:var(--on-accent); border-color:transparent}
+  .fab[hidden]{display:none}   /* display:grid would otherwise beat [hidden] */
+
+  /* ---------- bottom sheet ---------- */
+  .sheet{
+    position:absolute; left:0; right:0; bottom:0; z-index:820;
+    background:var(--surface); border-top:1px solid var(--line);
+    border-radius:18px 18px 0 0; box-shadow:var(--shadow-lg);
+    display:flex; flex-direction:column;
+    height:var(--sheet-h,148px); max-height:88%;
+    transition:height .18s ease;
+  }
+  .grip{padding:8px 0 4px; display:grid; place-items:center; cursor:grab; touch-action:none; flex:none}
+  .grip i{display:block;width:38px;height:4px;border-radius:2px;background:var(--line)}
+  .sheet-head{
+    display:flex;align-items:center;gap:8px;padding:0 14px 8px;flex:none;
+    border-bottom:1px solid var(--line);
+  }
+  .sheet-head h2{margin:0;font-size:13.5px;font-weight:680;letter-spacing:-.1px;flex:1;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .sheet-head .cnt{font-size:11.5px;color:var(--muted);font-variant-numeric:tabular-nums;flex:none}
+  .list{overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch;
+    padding:4px 0 calc(10px + env(safe-area-inset-bottom)); flex:1}
+
+  .row{
+    display:flex;align-items:center;gap:10px;padding:9px 14px;cursor:pointer;
+    border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent);
+  }
+  .row:last-child{border-bottom:0}
+  .row:active{background:var(--surface-2)}
+  .row.sel{background:color-mix(in srgb,var(--accent) 11%,transparent)}
+  .badge{
+    width:46px;flex:none;text-align:center;border-radius:8px;padding:5px 3px;
+    font-size:12.5px;font-weight:750;color:#fff;font-variant-numeric:tabular-nums;line-height:1.1;
+  }
+  .badge small{display:block;font-size:8.5px;font-weight:600;opacity:.85;letter-spacing:.3px}
+  .row .info{flex:1;min-width:0}
+  .row .info b{display:block;font-size:13.5px;font-weight:620;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .info span{display:block;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .right{flex:none;text-align:right}
+  .row .right b{display:block;font-size:13px;font-variant-numeric:tabular-nums;font-weight:650}
+  .row .right span{display:block;font-size:11px;font-weight:650}
+  .ontime{color:var(--ontime)} .late{color:var(--late)}
+  .empty{padding:22px 16px;text-align:center;color:var(--muted);font-size:13px;line-height:1.5}
+
+  /* ---------- detail ---------- */
+  .det{padding:2px 14px 14px}
+  .det .hero{display:flex;align-items:center;gap:11px;padding:11px 0 12px}
+  .det .hero .badge{width:56px;font-size:15px;padding:8px 4px}
+  .det .hero .h{flex:1;min-width:0}
+  .det .hero .h b{display:block;font-size:15.5px;font-weight:680;letter-spacing:-.2px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .det .hero .h span{display:block;font-size:12px;color:var(--muted);margin-top:1px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px}
+  .stat{background:var(--surface-2);border-radius:11px;padding:9px 10px;min-width:0}
+  .stat i{display:block;font-style:normal;font-size:10px;color:var(--faint);
+    text-transform:uppercase;letter-spacing:.5px;font-weight:650;margin-bottom:3px}
+  .stat b{display:block;font-size:15px;font-weight:700;font-variant-numeric:tabular-nums;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat b em{font-style:normal;font-size:10.5px;color:var(--muted);font-weight:600}
+
+  .calls{border-top:1px solid var(--line);padding-top:4px}
+  .call{display:flex;gap:10px;align-items:flex-start;padding:7px 0;font-size:13px;position:relative}
+  .call .dot{width:9px;height:9px;border-radius:50%;background:var(--line);flex:none;margin-top:4px;
+    box-shadow:0 0 0 3px var(--surface); z-index:1}
+  .call.done .dot{background:var(--muted)}
+  .call.next .dot{background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 25%,var(--surface))}
+  .call:not(:last-child):before{content:"";position:absolute;left:4px;top:12px;bottom:-4px;
+    width:1px;background:var(--line)}
+  .call .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .call.next .nm{font-weight:680}
+  .call .tm{flex:none;font-variant-numeric:tabular-nums;color:var(--muted);font-size:12.5px}
+  .call .tm s{opacity:.55;margin-right:4px}
+
+  .btns{display:flex;gap:8px;margin:12px 0 2px}
+  .btn{
+    flex:1;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);
+    border-radius:11px;padding:10px;font:inherit;font-size:13px;font-weight:650;cursor:pointer;
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;
+  }
+  .btn.pri{background:var(--accent);color:var(--on-accent);border-color:transparent}
+  .btn svg{width:16px;height:16px;stroke:currentColor;fill:none;stroke-width:2;
+    stroke-linecap:round;stroke-linejoin:round}
+
+  .toast{
+    position:absolute;left:50%;transform:translateX(-50%);
+    bottom:calc(var(--sheet-h,148px) + 66px); z-index:900;
+    background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:10px;
+    font-size:12.5px;font-weight:600;box-shadow:var(--shadow-lg);
+    opacity:0;pointer-events:none;transition:opacity .2s;max-width:82%;text-align:center;
+  }
+  .toast.show{opacity:.94}
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<canvas id="trains"></canvas>
+
+<div class="top">
+  <div class="bar">
+    <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+      <rect width="64" height="64" rx="14" fill="#12324d"/>
+      <path d="M22 14h20a6 6 0 0 1 6 6v18a6 6 0 0 1-6 6H22a6 6 0 0 1-6-6V20a6 6 0 0 1 6-6z" fill="#40d6c8"/>
+      <rect x="21" y="20" width="22" height="11" rx="2" fill="#12324d"/>
+      <circle cx="25" cy="38" r="3" fill="#12324d"/><circle cx="39" cy="38" r="3" fill="#12324d"/>
+      <path d="M20 48l-5 6M44 48l5 6" stroke="#40d6c8" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    <div class="t">
+      <h1>Rail Live</h1>
+      <div class="sub"><i class="live-dot" id="dot"></i><span id="status">Connecting…</span></div>
+    </div>
+    <input id="q" class="search" type="search" inputmode="numeric" placeholder="Train no." autocomplete="off">
+  </div>
+
+  <div class="chips" id="chips">
+    <button class="chip" data-k="pax"   aria-pressed="true"><i class="sw" style="background:var(--pax)"></i>Passenger <b class="n" id="n-pax">0</b></button>
+    <button class="chip" data-k="cargo" aria-pressed="true"><i class="sw" style="background:var(--cargo)"></i>Freight <b class="n" id="n-cargo">0</b></button>
+    <button class="chip" data-k="other" aria-pressed="false"><i class="sw" style="background:var(--other)"></i>Shunting <b class="n" id="n-other">0</b></button>
+    <button class="chip" data-k="moving" aria-pressed="false">Moving only</button>
+  </div>
+</div>
+
+<div class="fabs" id="fabs">
+  <button class="fab" id="btn-follow" title="Follow selected train" hidden>
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+  </button>
+  <button class="fab" id="btn-loc" title="My location">
+    <svg viewBox="0 0 24 24"><path d="M21 3L14.5 21l-2.5-8-8-2.5z"/></svg>
+  </button>
+</div>
+
+<div class="sheet" id="sheet">
+  <div class="grip" id="grip"><i></i></div>
+  <div class="sheet-head">
+    <h2 id="sheet-title">Trains running now</h2>
+    <span class="cnt" id="sheet-count"></span>
+  </div>
+  <div class="list" id="list"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="../vendor/leaflet.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* ============================================================================
+   Rail Live — passenger & freight trains, moving live on a map.
+
+   Data: Fintraffic / Digitraffic open rail API (rata.digitraffic.fi).
+   It is the one national feed that is free, key-less, CORS-enabled *and*
+   publishes real on-board GPS for FREIGHT as well as passenger trains.
+     • /train-locations/latest/  -> GPS fix + speed, refreshed ~1 s
+     • /trains/{date}            -> category (Cargo/Commuter/Long-distance),
+                                    operator and full timetable per train
+     • /metadata/stations        -> station names + coordinates
+   Licence: CC BY 4.0, Fintraffic. See README for the UK / Network Rail route.
+   ========================================================================== */
+
+var API   = "https://rata.digitraffic.fi/api/v1";
+var POLL  = 3000;      /* position poll (feed itself updates ~1 s)         */
+var META  = 10*60000;  /* timetable + category refresh                     */
+var STALE = 90000;     /* a fix older than this = train no longer tracked  */
+
+/* ---------- classification ------------------------------------------------ */
+var CARGO = {Cargo:1},
+    PAX   = {Commuter:1,"Long-distance":1};
+
+function kindOf(cat){
+  if (CARGO[cat]) return "cargo";
+  if (PAX[cat])   return "pax";
+  return "other";                       /* Shunting, Locomotive, machines   */
+}
+function colourOf(t){
+  if (t.kind === "cargo") return css("--cargo");
+  if (t.kind === "other") return css("--other");
+  return t.cat === "Long-distance" ? css("--pax-long") : css("--pax");
+}
+function css(v){ return getComputedStyle(document.documentElement).getPropertyValue(v).trim(); }
+
+/* ---------- state --------------------------------------------------------- */
+var trains   = new Map();   /* key -> train object                            */
+var stations = new Map();   /* shortCode -> {name,lat,lon}                    */
+var filters  = {pax:true, cargo:true, other:false, moving:false};
+var query    = "";
+var selected = null;        /* key                                            */
+var follow   = false;
+var lastFeed = 0;
+var sheetH   = 148;
+var userMark = null;
+
+/* ---------- map ----------------------------------------------------------- */
+var map = L.map("map", {
+  zoomControl:false, attributionControl:true,
+  center:[62.2, 25.7], zoom:6, preferCanvas:true,
+  zoomSnap:.5, worldCopyJump:false
+});
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom:19, minZoom:4,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · trains &copy; <a href="https://www.digitraffic.fi/">Fintraffic</a> CC BY 4.0'
+}).addTo(map);
+L.control.scale({imperial:false, position:"bottomleft"}).addTo(map);
+
+/* the trail of the selected train, drawn as a normal Leaflet polyline */
+var trail = L.polyline([], {color:css("--accent"), weight:3, opacity:.75, dashArray:"1 6", lineCap:"round"}).addTo(map);
+
+/* ============================================================================
+   Canvas layer — one canvas for every train, redrawn each animation frame.
+   Leaflet markers would give ~600 DOM nodes and visibly stutter; a canvas
+   keeps the motion smooth and lets us rotate each train to its heading.
+   ========================================================================== */
+var cv  = document.getElementById("trains");
+var ctx = cv.getContext("2d");
+var dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+
+function sizeCanvas(){
+  var s = map.getSize();
+  cv.width  = Math.round(s.x * dpr);
+  cv.height = Math.round(s.y * dpr);
+  cv.style.width  = s.x + "px";
+  cv.style.height = s.y + "px";
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+sizeCanvas();
+map.on("resize", sizeCanvas);
+/* the canvas is pinned to the container, not to a map pane, so hide it while
+   Leaflet is mid zoom-animation (panes are transformed, the canvas is not) */
+map.on("zoomstart", function(){ cv.classList.add("hide"); });
+map.on("zoomend",   function(){ cv.classList.remove("hide"); });
+
+/* ---------- geometry helpers ---------------------------------------------- */
+function bearing(a, b){
+  var y = b.lon - a.lon, x = b.lat - a.lat;          /* screen-space is fine */
+  if (!y && !x) return null;
+  return Math.atan2(y * Math.cos(a.lat*Math.PI/180), x);
+}
+function lerp(a,b,t){ return a + (b-a)*t; }
+
+/* ---------- drawing ------------------------------------------------------- */
+function drawTrain(p, t){
+  var sel  = t.key === selected;
+  var col  = colourOf(t);
+  var z    = map.getZoom();
+  var r    = z >= 11 ? 9 : z >= 8 ? 7.5 : 6.2;
+  if (sel) r += 2;
+
+  ctx.save();
+  ctx.translate(p.x, p.y);
+
+  /* halo so trains stay legible over busy map tiles */
+  ctx.beginPath();
+  ctx.arc(0,0,r+2.4,0,Math.PI*2);
+  ctx.fillStyle = sel ? "rgba(45,212,191,.32)" : "rgba(0,0,0,.11)";
+  ctx.fill();
+
+  if (t.head === null || t.speed < 3){
+    /* stationary: a plain dot reads better than an arrow pointing nowhere */
+    ctx.beginPath();
+    ctx.arc(0,0,r*0.82,0,Math.PI*2);
+    ctx.fillStyle = col; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.stroke();
+  } else {
+    ctx.rotate(t.head);
+    ctx.beginPath();                       /* chevron pointing at the heading */
+    ctx.moveTo(0, -r*1.35);
+    ctx.lineTo(r*0.92, r*0.95);
+    ctx.lineTo(0, r*0.42);
+    ctx.lineTo(-r*0.92, r*0.95);
+    ctx.closePath();
+    ctx.fillStyle = col; ctx.fill();
+    ctx.lineWidth = 1.8; ctx.strokeStyle = "rgba(255,255,255,.92)";
+    ctx.lineJoin = "round"; ctx.stroke();
+  }
+  ctx.restore();
+
+  /* label the train number once we are zoomed in far enough to have room */
+  if (z >= 9 || sel){
+    var lbl = String(t.num) + (t.speed >= 3 ? "  " + Math.round(t.speed) : "");
+    ctx.font = (sel ? "700 " : "600 ") + (sel ? 12.5 : 11) + "px system-ui,sans-serif";
+    var w = ctx.measureText(lbl).width;
+    var lx = p.x + r + 6, ly = p.y - r - 4;
+    ctx.fillStyle = sel ? css("--ink") : "rgba(0,0,0,.55)";
+    roundRect(lx-4, ly-11, w+8, 16, 5); ctx.fill();
+    ctx.fillStyle = sel ? css("--bg") : "#fff";
+    ctx.textBaseline = "middle";
+    ctx.fillText(lbl, lx, ly - 2.6);
+  }
+}
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+
+function frame(){
+  requestAnimationFrame(frame);
+  if (cv.classList.contains("hide")) return;
+
+  var now  = Date.now();
+  var size = map.getSize();
+  ctx.clearRect(0,0,size.x,size.y);
+
+  var list = [];
+  trains.forEach(function(t){
+    if (!t.pos || !visible(t)) return;
+    if (now - t.fixAt > STALE) return;
+
+    /* glide from the previously drawn point to the newest fix */
+    var k = t.animEnd > t.animStart
+          ? Math.max(0, Math.min(1, (now - t.animStart) / (t.animEnd - t.animStart)))
+          : 1;
+    var lat = lerp(t.from.lat, t.pos.lat, k),
+        lon = lerp(t.from.lon, t.pos.lon, k);
+
+    var p = map.latLngToContainerPoint([lat, lon]);
+    t.screen = p;
+    if (p.x < -60 || p.y < -60 || p.x > size.x+60 || p.y > size.y+60) return;
+    list.push(t);
+  });
+
+  /* selected train paints last so it is never hidden under another */
+  list.sort(function(a,b){ return (a.key===selected) - (b.key===selected); });
+  for (var i=0;i<list.length;i++) drawTrain(list[i].screen, list[i]);
+}
+requestAnimationFrame(frame);
+
+function visible(t){
+  if (!filters[t.kind]) return false;
+  if (filters.moving && t.speed < 3) return false;
+  if (query){
+    var q = query.toLowerCase();
+    if (String(t.num).indexOf(q) !== 0 &&
+        (t.name||"").toLowerCase().indexOf(q) < 0 &&
+        (t.dest||"").toLowerCase().indexOf(q) < 0 &&
+        (t.orig||"").toLowerCase().indexOf(q) < 0) return false;
+  }
+  return true;
+}
+
+/* ============================================================================
+   Feed
+   ========================================================================== */
+function J(url){
+  return fetch(url, {cache:"no-store"}).then(function(r){
+    if (!r.ok) throw new Error(url + " -> " + r.status);
+    return r.json();
+  });
+}
+
+function loadStations(){
+  return J(API + "/metadata/stations").then(function(rows){
+    rows.forEach(function(s){
+      stations.set(s.stationShortCode, {
+        name: s.stationName.replace(/ asema$/,""),
+        lat: s.latitude, lon: s.longitude, pax: s.passengerTraffic
+      });
+    });
+  }).catch(function(e){ console.warn("stations", e); });
+}
+function sName(code){
+  var s = stations.get(code);
+  return s ? s.name : code;
+}
+
+/* today in Helsinki — the feed keys trains by their local departure date */
+function feedDate(){
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone:"Europe/Helsinki", year:"numeric", month:"2-digit", day:"2-digit"
+  }).format(new Date());
+}
+
+/* Timetable + category for every train running today. ~600 kB raw but gzipped
+   in transit, and only re-fetched every 10 minutes. */
+var metaAt = 0, metaBusy = false;
+function loadMeta(){
+  if (metaBusy) return Promise.resolve();
+  metaBusy = true; metaAt = Date.now();
+  var d = feedDate();
+  return Promise.all([
+    J(API + "/trains/" + d).catch(function(){ return []; }),
+    /* trains that departed before midnight are still keyed to yesterday */
+    J(API + "/trains/" + shiftDate(d,-1)).catch(function(){ return []; })
+  ]).then(function(parts){
+    var rows = parts[0].concat(parts[1]);
+    rows.forEach(function(r){
+      var key = r.trainNumber + "|" + r.departureDate;
+      var t = trains.get(key) || newTrain(key, r.trainNumber, r.departureDate);
+      applyMeta(t, r);
+      trains.set(key, t);
+    });
+    if (selected) renderDetail(); else renderList();
+  }).catch(function(e){ console.warn("meta", e); })
+    .then(function(){ metaBusy = false; });
+}
+function shiftDate(iso, days){
+  var d = new Date(iso + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0,10);
+}
+
+function newTrain(key, num, date){
+  return {
+    key:key, num:num, date:date,
+    cat:null, kind:"other", type:"", op:"", cancelled:false,
+    name:"", orig:"", dest:"", calls:[], delay:null, nextCall:null,
+    pos:null, from:null, animStart:0, animEnd:0, fixAt:0,
+    speed:0, head:null, screen:null, trailPts:[]
+  };
+}
+
+function applyMeta(t, r){
+  t.cat  = r.trainCategory;
+  t.kind = kindOf(r.trainCategory);
+  t.type = r.trainType || "";
+  t.op   = (r.operatorShortCode || "").toUpperCase();
+  t.cancelled = !!r.cancelled;
+  t.name = (r.commuterLineID ? "Line " + r.commuterLineID
+           : (r.trainType || "") + " " + r.trainNumber).trim();
+
+  var rows = r.timeTableRows || [];
+  if (!rows.length) return;
+
+  /* collapse arrival/departure pairs into one entry per calling point */
+  var calls = [], seen = new Map();
+  rows.forEach(function(x){
+    if (!x.trainStopping) return;
+    var c = seen.get(x.stationShortCode + "|" + (x.commercialTrack||""));
+    var sch = x.scheduledTime,
+        act = x.actualTime || x.liveEstimateTime || null;
+    if (!c || c.doneDep){
+      c = {code:x.stationShortCode, name:sName(x.stationShortCode),
+           arr:null, dep:null, arrAct:null, depAct:null,
+           diff:x.differenceInMinutes||0, actual:!!x.actualTime,
+           commercial:!!x.commercialStop, doneDep:false};
+      calls.push(c);
+      seen.set(x.stationShortCode + "|" + (x.commercialTrack||""), c);
+    }
+    if (x.type === "ARRIVAL"){ c.arr = sch; c.arrAct = act; }
+    else { c.dep = sch; c.depAct = act; c.doneDep = true; }
+    if (x.actualTime) c.actual = true;
+    if (typeof x.differenceInMinutes === "number") c.diff = x.differenceInMinutes;
+  });
+
+  t.calls = calls;
+  if (calls.length){
+    t.orig = calls[0].name;
+    t.dest = calls[calls.length-1].name;
+  }
+
+  /* delay = the most recent point the train has actually passed.
+     nextCall is held as an object reference, not an index, because the detail
+     view renders a filtered subset of calls and indices would not line up. */
+  var last = null, next = null;
+  for (var i=0;i<calls.length;i++){
+    if (calls[i].actual) last = calls[i];
+    else if (!next)      next = calls[i];
+  }
+  t.delay    = last ? last.diff : null;
+  t.nextCall = next;
+}
+
+/* ---------- positions ----------------------------------------------------- */
+function poll(){
+  J(API + "/train-locations/latest/").then(function(rows){
+    var now = Date.now();
+    lastFeed = now;
+
+    rows.forEach(function(p){
+      var key = p.trainNumber + "|" + p.departureDate;
+      var t = trains.get(key) || newTrain(key, p.trainNumber, p.departureDate);
+      var lon = p.location.coordinates[0], lat = p.location.coordinates[1];
+      var fix = {lat:lat, lon:lon};
+
+      if (t.pos){
+        /* keep whatever is currently on screen as the animation origin so the
+           marker never jumps backwards when a fix lands mid-glide */
+        var k = t.animEnd > t.animStart
+              ? Math.max(0, Math.min(1,(now - t.animStart)/(t.animEnd - t.animStart))) : 1;
+        t.from = {lat:lerp(t.from.lat,t.pos.lat,k), lon:lerp(t.from.lon,t.pos.lon,k)};
+        var b = bearing(t.from, fix);
+        if (b !== null) t.head = b;
+      } else {
+        t.from = fix;
+      }
+      t.pos = fix;
+      t.animStart = now;
+      /* glide slightly longer than the poll gap so the marker is still easing
+         when the next fix lands — otherwise it visibly parks between polls */
+      t.animEnd   = now + POLL * 1.25;
+      t.fixAt     = now;
+      t.speed     = p.speed || 0;
+
+      if (t.key === selected){
+        t.trailPts.push([lat,lon]);
+        if (t.trailPts.length > 300) t.trailPts.shift();
+        trail.setLatLngs(t.trailPts);
+        if (follow) map.panTo([lat,lon], {animate:true, duration:.6, easeLinearity:.4});
+      }
+      trains.set(key, t);
+    });
+
+    /* A train that has just departed reports GPS before we hold its timetable,
+       and with no category it would sit in the hidden "other" bucket. Pull the
+       timetables again (at most once a minute) so it surfaces quickly. */
+    var unknown = 0;
+    trains.forEach(function(t){ if (t.cat === null && t.pos && now - t.fixAt < STALE) unknown++; });
+    if (unknown && now - metaAt > 60000) loadMeta();
+
+    setStatus();
+    renderCounts();
+    if (selected) renderDetail(); else renderList();
+  }).catch(function(e){
+    console.warn("poll", e);
+    setStatus(true);
+  });
+}
+
+function setStatus(err){
+  var dot = document.getElementById("dot"),
+      el  = document.getElementById("status");
+  var age = lastFeed ? Math.round((Date.now()-lastFeed)/1000) : null;
+  var live = [];
+  trains.forEach(function(t){ if (t.pos && Date.now()-t.fixAt < STALE) live.push(t); });
+
+  if (err && (age === null || age > 20)){
+    dot.classList.add("stale");
+    el.textContent = "Reconnecting…";
+    return;
+  }
+  dot.classList.remove("stale");
+  el.textContent = live.length + " trains tracked · GPS " + (age <= 1 ? "just now" : age + "s ago");
+}
+
+/* ============================================================================
+   UI
+   ========================================================================== */
+function liveTrains(){
+  var now = Date.now(), out = [];
+  trains.forEach(function(t){
+    if (t.pos && now - t.fixAt < STALE) out.push(t);
+  });
+  return out;
+}
+
+function renderCounts(){
+  var c = {pax:0, cargo:0, other:0};
+  liveTrains().forEach(function(t){ c[t.kind]++; });
+  document.getElementById("n-pax").textContent   = c.pax;
+  document.getElementById("n-cargo").textContent = c.cargo;
+  document.getElementById("n-other").textContent = c.other;
+}
+
+function badgeFor(t){
+  var col = colourOf(t);
+  var tag = t.kind === "cargo" ? "FREIGHT" : (t.kind === "other" ? (t.cat||"OTHER").toUpperCase().slice(0,7) : (t.type || "TRAIN"));
+  return '<div class="badge" style="background:'+col+'">'+t.num+'<small>'+esc(tag)+'</small></div>';
+}
+function esc(s){
+  return String(s==null?"":s).replace(/[&<>"']/g, function(c){
+    return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+  });
+}
+function delayHtml(t){
+  if (t.delay === null) return '<span class="ontime">—</span>';
+  if (t.delay <= 0)  return '<span class="ontime">on time</span>';
+  if (t.delay === 1) return '<span class="ontime">1 min late</span>';
+  return '<span class="late">'+t.delay+' min late</span>';
+}
+
+function renderList(){
+  var el = document.getElementById("list");
+  var c  = map.getCenter();
+  var rows = liveTrains().filter(visible);
+
+  rows.sort(function(a,b){
+    var da = (a.pos.lat-c.lat)*(a.pos.lat-c.lat) + (a.pos.lon-c.lng)*(a.pos.lon-c.lng)*0.25;
+    var db = (b.pos.lat-c.lat)*(b.pos.lat-c.lat) + (b.pos.lon-c.lng)*(b.pos.lon-c.lng)*0.25;
+    return da - db;
+  });
+
+  document.getElementById("sheet-title").textContent = query ? 'Matching “'+query+'”' : "Trains running now";
+  document.getElementById("sheet-count").textContent = rows.length + (rows.length===1?" train":" trains");
+
+  if (!rows.length){
+    el.innerHTML = '<div class="empty">' +
+      (query ? "No train matches that number." :
+       "No trains match these filters.<br>Try switching Passenger or Freight back on.") + '</div>';
+    return;
+  }
+
+  var h = "";
+  rows.slice(0,120).forEach(function(t){
+    h += '<div class="row" data-k="'+esc(t.key)+'">' + badgeFor(t) +
+         '<div class="info"><b>' + esc(t.orig && t.dest ? t.orig + " → " + t.dest : (t.name || "Train " + t.num)) + '</b>' +
+         '<span>' + esc([t.op, t.cat, t.cancelled ? "CANCELLED" : ""].filter(Boolean).join(" · ")) + '</span></div>' +
+         '<div class="right"><b>' + Math.round(t.speed) + '<em style="font-size:10px;color:var(--muted)"> km/h</em></b>' +
+         delayHtml(t) + '</div></div>';
+  });
+  el.innerHTML = h;
+}
+
+function renderDetail(){
+  var t = trains.get(selected);
+  if (!t) { clearSelection(); return; }
+  var el = document.getElementById("list");
+
+  document.getElementById("sheet-title").textContent = "Train " + t.num;
+  document.getElementById("sheet-count").textContent = t.op || "";
+
+  var calls = t.calls.filter(function(c){ return c.commercial || t.kind === "cargo"; });
+  var ch = "";
+  calls.forEach(function(c){
+    var cls = c.actual ? "done" : (c === t.nextCall ? "next" : "");
+    var sch = c.dep || c.arr, act = c.depAct || c.arrAct;
+    /* only strike the booked time when the *displayed* minute actually differs —
+       an actual of 18:00:15 against a booked 18:00:00 is not a change */
+    var schT = hhmm(sch), actT = hhmm(act);
+    ch += '<div class="call '+cls+'"><i class="dot"></i>' +
+          '<span class="nm">'+esc(c.name)+'</span>' +
+          '<span class="tm">' +
+            (act && sch && actT !== schT ? '<s>'+esc(schT)+'</s>' : '') +
+            esc(act ? actT : schT) +
+          '</span></div>';
+  });
+
+  el.innerHTML =
+    '<div class="det">' +
+      '<div class="hero">' + badgeFor(t) +
+        '<div class="h"><b>' + esc(t.orig && t.dest ? t.orig + " → " + t.dest : (t.name || "Train " + t.num)) + '</b>' +
+        '<span>' + esc([t.cat, t.op, t.cancelled ? "CANCELLED" : ""].filter(Boolean).join(" · ")) + '</span></div>' +
+      '</div>' +
+      '<div class="stats">' +
+        '<div class="stat"><i>Speed</i><b>' + Math.round(t.speed) + '<em> km/h</em></b></div>' +
+        '<div class="stat"><i>Punctuality</i><b style="font-size:13px">' + delayHtml(t) + '</b></div>' +
+        '<div class="stat"><i>Next stop</i><b style="font-size:13px">' +
+          esc(t.nextCall ? t.nextCall.name : "—") + '</b></div>' +
+      '</div>' +
+      '<div class="btns">' +
+        '<button class="btn pri" id="d-follow"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>' +
+          (follow ? "Following" : "Follow") + '</button>' +
+        '<button class="btn" id="d-back"><svg viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></svg>All trains</button>' +
+      '</div>' +
+      (ch ? '<div class="calls">' + ch + '</div>'
+          : '<div class="empty">No timetable published for this working.</div>') +
+    '</div>';
+
+  document.getElementById("d-back").onclick   = clearSelection;
+  document.getElementById("d-follow").onclick = function(){
+    follow = !follow;
+    document.getElementById("btn-follow").classList.toggle("on", follow);
+    if (follow && t.pos) map.setView([t.pos.lat,t.pos.lon], Math.max(map.getZoom(), 11));
+    renderDetail();
+  };
+}
+function hhmm(iso){
+  if (!iso) return "—";
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone:"Europe/Helsinki", hour:"2-digit", minute:"2-digit"
+  }).format(new Date(iso));
+}
+
+function select(key){
+  selected = key;
+  var t = trains.get(key);
+  document.getElementById("btn-follow").hidden = false;
+  trail.setLatLngs([]);
+  if (t){
+    t.trailPts = t.pos ? [[t.pos.lat, t.pos.lon]] : [];
+    if (t.pos && !map.getBounds().pad(-0.15).contains([t.pos.lat,t.pos.lon]))
+      map.setView([t.pos.lat,t.pos.lon], Math.max(map.getZoom(), 10));
+  }
+  if (sheetH < 300) setSheet(Math.round(innerHeight * 0.55));
+  renderDetail();
+}
+function clearSelection(){
+  selected = null; follow = false;
+  document.getElementById("btn-follow").hidden = true;
+  document.getElementById("btn-follow").classList.remove("on");
+  trail.setLatLngs([]);
+  renderList();
+}
+
+/* ---------- interactions -------------------------------------------------- */
+document.getElementById("list").addEventListener("click", function(e){
+  var row = e.target.closest(".row");
+  if (row) select(row.dataset.k);
+});
+
+map.on("click", function(e){
+  /* nearest train within a fingertip of the tap */
+  var best = null, bd = 26*26;
+  trains.forEach(function(t){
+    if (!t.screen || !t.pos || !visible(t)) return;
+    if (Date.now() - t.fixAt > STALE) return;
+    var dx = t.screen.x - e.containerPoint.x, dy = t.screen.y - e.containerPoint.y;
+    var d = dx*dx + dy*dy;
+    if (d < bd){ bd = d; best = t; }
+  });
+  if (best) select(best.key);
+  else if (selected) clearSelection();
+});
+map.on("moveend", function(){ if (!selected) renderList(); });
+
+document.getElementById("chips").addEventListener("click", function(e){
+  var chip = e.target.closest(".chip");
+  if (!chip) return;
+  var k = chip.dataset.k;
+  filters[k] = !filters[k];
+  chip.setAttribute("aria-pressed", String(filters[k]));
+  if (selected) { var t = trains.get(selected); if (t && !visible(t)) clearSelection(); else renderDetail(); }
+  else renderList();
+});
+
+var qEl = document.getElementById("q");
+qEl.addEventListener("input", function(){
+  query = qEl.value.trim();
+  if (selected) clearSelection(); else renderList();
+});
+
+/* my location */
+document.getElementById("btn-loc").onclick = function(){
+  if (!navigator.geolocation) return toast("Location is not available on this device.");
+  var b = this;
+  b.classList.add("on");
+  navigator.geolocation.getCurrentPosition(function(p){
+    b.classList.remove("on");
+    var ll = [p.coords.latitude, p.coords.longitude];
+    if (userMark) map.removeLayer(userMark);
+    userMark = L.circleMarker(ll, {radius:7, color:"#fff", weight:2.5,
+      fillColor:css("--you"), fillOpacity:1}).addTo(map);
+    map.setView(ll, Math.max(map.getZoom(), 10));
+    if (!selected) renderList();
+  }, function(){
+    b.classList.remove("on");
+    toast("Could not get your location.");
+  }, {enableHighAccuracy:true, timeout:9000, maximumAge:30000});
+};
+
+document.getElementById("btn-follow").onclick = function(){
+  follow = !follow;
+  this.classList.toggle("on", follow);
+  var t = trains.get(selected);
+  if (follow && t && t.pos) map.setView([t.pos.lat,t.pos.lon], Math.max(map.getZoom(), 11));
+  if (selected) renderDetail();
+};
+map.on("dragstart", function(){
+  if (follow){
+    follow = false;
+    document.getElementById("btn-follow").classList.remove("on");
+    if (selected) renderDetail();
+  }
+});
+
+/* ---------- draggable bottom sheet ---------------------------------------- */
+function setSheet(h){
+  sheetH = Math.max(96, Math.min(h, Math.round(innerHeight * 0.88)));
+  document.documentElement.style.setProperty("--sheet-h", sheetH + "px");
+}
+setSheet(148);
+
+(function(){
+  var grip = document.getElementById("grip"), start = 0, base = 0, dragging = false;
+  function down(e){
+    dragging = true; base = sheetH;
+    start = (e.touches ? e.touches[0].clientY : e.clientY);
+    grip.setPointerCapture && e.pointerId != null && grip.setPointerCapture(e.pointerId);
+  }
+  function move(e){
+    if (!dragging) return;
+    var y = (e.touches ? e.touches[0].clientY : e.clientY);
+    setSheet(base + (start - y));
+    e.preventDefault();
+  }
+  function up(){
+    if (!dragging) return;
+    dragging = false;
+    /* snap to peek / half / full */
+    var snaps = [148, Math.round(innerHeight*0.55), Math.round(innerHeight*0.86)];
+    var best = snaps[0];
+    snaps.forEach(function(s){ if (Math.abs(s-sheetH) < Math.abs(best-sheetH)) best = s; });
+    setSheet(best);
+  }
+  grip.addEventListener("pointerdown", down);
+  window.addEventListener("pointermove", move, {passive:false});
+  window.addEventListener("pointerup", up);
+  grip.addEventListener("touchstart", down, {passive:true});
+  window.addEventListener("touchmove", move, {passive:false});
+  window.addEventListener("touchend", up);
+})();
+
+var toastT;
+function toast(msg){
+  var el = document.getElementById("toast");
+  el.textContent = msg; el.classList.add("show");
+  clearTimeout(toastT);
+  toastT = setTimeout(function(){ el.classList.remove("show"); }, 2600);
+}
+
+/* ---------- go ------------------------------------------------------------ */
+loadStations()
+  .then(loadMeta)
+  .then(function(){
+    poll();
+    setInterval(poll, POLL);
+    setInterval(loadMeta, META);
+    setInterval(function(){ setStatus(); }, 1000);
+  });
+
+/* pause polling while the tab is hidden, resume immediately on return */
+var timerPaused = false;
+document.addEventListener("visibilitychange", function(){
+  if (document.hidden) timerPaused = true;
+  else if (timerPaused){ timerPaused = false; poll(); }
+});
+
+})();
+</script>
+</body>
+</html>

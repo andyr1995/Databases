@@ -1,0 +1,14 @@
+{
+  "name": "Rail Live — passenger & freight trains",
+  "short_name": "Rail Live",
+  "description": "Live map of passenger and freight trains moving in real time, with GPS positions, speed and delays.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#080c10",
+  "theme_color": "#12324d",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
