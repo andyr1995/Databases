@@ -1,0 +1,20 @@
+{
+  "appId": "app.firstcome.puzzle",
+  "appName": "First Come",
+  "version": "1.0.0",
+  "build": 1,
+  "webDir": "../docs/first-come",
+  "admob": {
+    "testing": true,
+    "ios": {
+      "appId": "ca-app-pub-3940256099942544~1458002511",
+      "banner": "ca-app-pub-3940256099942544/2435281174",
+      "interstitial": "ca-app-pub-3940256099942544/4411468910",
+      "rewarded": "ca-app-pub-3940256099942544/1712485313"
+    }
+  },
+  "iap": {
+    "removeAdsProductId": "remove_ads"
+  },
+  "trackingUsageDescription": "This lets the game show ads that are more relevant to you. The game works the same either way."
+}

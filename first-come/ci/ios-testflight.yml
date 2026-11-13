@@ -1,0 +1,240 @@
+# iOS release build: archive, sign and upload to App Store Connect (TestFlight)
+#
+# Started by hand from the repository's Actions tab ("Run workflow"). It builds the app the
+# way the App Store wants it, lets Apple's servers sign it, and uploads it. After Apple has
+# processed the build (usually some minutes) it appears under TestFlight in App Store Connect,
+# from where it can be given to testers or attached to a version and sent for App Review.
+#
+# TEMPLATE. To use it, copy this file to .github/workflows/ios-testflight.yml and replace
+# __APP_DIR__ (one place) with the folder that holds app.config.json, from the top of the
+# repository, without a leading or trailing slash.
+#
+# Repository secrets it needs (Settings > Secrets and variables > Actions):
+#
+#   APP_STORE_CONNECT_KEY_ID          Key ID of an App Store Connect API key (10 characters)
+#   APP_STORE_CONNECT_ISSUER_ID       Issuer ID shown above the list of keys (a UUID)
+#   APP_STORE_CONNECT_KEY_P8_BASE64   The downloaded AuthKey_XXXXXXXXXX.p8 file, base64-encoded
+#   APPLE_TEAM_ID                     Team ID from developer.apple.com > Membership (10 characters)
+#
+# Signing is automatic and "cloud-managed": no certificate or provisioning profile is stored
+# in the repository or in a secret. xcodebuild signs in with the API key and Apple creates
+# and holds what is needed.
+#
+# The build number of every upload must be higher than the last one for the same version.
+# It is taken from this workflow's run counter, which goes up by one on every run.
+#
+# UNTESTED: this workflow was written on Linux, from Apple's and GitHub's documentation. It
+# has never run. Expect to fix something the first time; the README lists the likely causes.
+
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_number:
+        description: Build number. Leave empty to use this workflow's run number.
+        required: false
+        type: string
+
+env:
+  APP_DIR: __APP_DIR__
+
+permissions:
+  contents: read
+
+# Never two uploads at once.
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    name: Archive and upload
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      BUILD_NUMBER: ${{ inputs.build_number || github.run_number }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      ASC_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      - name: Check the inputs
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_P8_BASE64 }}
+        run: |
+          missing=""
+          [ -n "$APPLE_TEAM_ID" ] || missing="$missing APPLE_TEAM_ID"
+          [ -n "$ASC_KEY_ID" ] || missing="$missing APP_STORE_CONNECT_KEY_ID"
+          [ -n "$ASC_ISSUER_ID" ] || missing="$missing APP_STORE_CONNECT_ISSUER_ID"
+          [ -n "$ASC_KEY_P8_BASE64" ] || missing="$missing APP_STORE_CONNECT_KEY_P8_BASE64"
+          if [ -n "$missing" ]; then
+            echo "::error::These repository secrets are not set:$missing"
+            exit 1
+          fi
+          case "$BUILD_NUMBER" in
+            '' | *[!0-9]* | 0*)
+              echo "::error::The build number must be a whole number, 1 or more, without leading zeros. Got: $BUILD_NUMBER"
+              exit 1
+              ;;
+          esac
+
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check app.config.json
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          node -e '
+            const config = require("./app.config.json");
+            if (config.appId.startsWith("com.example.")) {
+              console.log(`::error::app.config.json still has the placeholder bundle id "${config.appId}". Put in the bundle id you registered with Apple, run npm run sync and commit.`);
+              process.exit(1);
+            }
+            if (config.admob.testing) {
+              console.log("::warning::admob.testing is true: this build only shows Google demo adverts and earns nothing. Fine for testers; do not send it for App Review.");
+            }
+            console.log(`${config.appName} (${config.appId}) ${config.version}, build ${process.env.BUILD_NUMBER}`);
+          '
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      # No version is named: the newest Xcode on the runner that is not a beta is used, because
+      # App Store Connect refuses builds from an Xcode that is too old.
+      - name: Select the newest stable Xcode on the runner
+        run: |
+          xcode_app="$(bash "$APP_DIR/scripts/select-xcode.sh")"
+          echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version
+
+      - name: Install JavaScript packages
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Typecheck and test
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Copy the web game into the Xcode project
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run sync
+
+      - name: Restore downloaded Swift packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles(format('{0}/package-lock.json', env.APP_DIR)) }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      # The key is written to a file only for this job and deleted in the last step.
+      - name: Write the App Store Connect API key to a file
+        env:
+          ASC_KEY_P8_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_P8_BASE64 }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/asc"
+          key_file="$RUNNER_TEMP/asc/AuthKey_${ASC_KEY_ID}.p8"
+          if ! printf '%s' "$ASC_KEY_P8_BASE64" | base64 --decode > "$key_file" 2>/dev/null ||
+            ! grep -q "BEGIN PRIVATE KEY" "$key_file"; then
+            rm -f "$key_file"
+            echo "::error::APP_STORE_CONNECT_KEY_P8_BASE64 does not decode to a .p8 key file. The secret must be the whole file, base64-encoded: base64 -i AuthKey_XXXXXXXXXX.p8"
+            exit 1
+          fi
+          echo "ASC_KEY_FILE=$key_file" >> "$GITHUB_ENV"
+
+      # Build the release version of the app for real iPhones. -allowProvisioningUpdates with
+      # the key lets xcodebuild register the bundle id and fetch signing material by itself.
+      # The team and the build number are given here and override what is in the project.
+      #
+      # If this step fails on signing (for example "Your team has no devices", or a limit on
+      # development certificates after many runs), the fix to try first is to register one
+      # device in the developer account. A second thing to try, equally untested: add the line
+      #   CODE_SIGNING_ALLOWED=NO \
+      # before DEVELOPMENT_TEAM below, so that the archive is made unsigned and only the export
+      # step signs it. That can work here because the app has no entitlements file.
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project "$APP_DIR/ios/App/App.xcodeproj" \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -hideShellScriptEnvironment \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_FILE" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID" \
+            DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
+
+      - name: Check the archive
+        run: |
+          app="$RUNNER_TEMP/App.xcarchive/Products/Applications/App.app"
+          plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist"; }
+          need() { if ! "$@"; then echo "::error::The archived app failed this check: $*"; exit 1; fi; }
+          need test -f "$app/public/index.html"
+          need test -f "$app/public/vendor/native-bridge.js"
+          need test -f "$app/PrivacyInfo.xcprivacy"
+          need test ! -e "$app/Products.storekit"
+          need test "$(plist CFBundleVersion)" = "$BUILD_NUMBER"
+          need test "$(plist UIDeviceFamily:0)" = "1"
+          {
+            echo "### Archived for App Store Connect"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Xcode | $(xcodebuild -version | tr '\n' ' ') |"
+            echo "| Name | $(plist CFBundleDisplayName) |"
+            echo "| Bundle id | $(plist CFBundleIdentifier) |"
+            echo "| Version (build) | $(plist CFBundleShortVersionString) ($(plist CFBundleVersion)) |"
+            echo "| AdMob app id | $(plist GADApplicationIdentifier) |"
+            echo "| Built with SDK | $(plist DTSDKName) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # "destination: upload" makes the export step send the signed app straight to
+      # App Store Connect. Apple signs it with a distribution certificate it keeps itself.
+      - name: Sign for the App Store and upload
+        run: |
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>app-store-connect</string>
+            <key>destination</key>
+            <string>upload</string>
+            <key>signingStyle</key>
+            <string>automatic</string>
+            <key>teamID</key>
+            <string>${APPLE_TEAM_ID}</string>
+            <key>manageAppVersionAndBuildNumber</key>
+            <false/>
+            <key>uploadSymbols</key>
+            <true/>
+          </dict>
+          </plist>
+          EOF
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$ASC_KEY_FILE" \
+            -authenticationKeyID "$ASC_KEY_ID" \
+            -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+          echo "Uploaded build $BUILD_NUMBER. It appears in App Store Connect > TestFlight once Apple has processed it." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the key file
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/asc"

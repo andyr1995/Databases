@@ -1,0 +1,41 @@
+{
+  "name": "first-come",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "First Come: native iOS wrapper, tools and tests for the web game",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "build:bridge": "node scripts/build-bridge.mjs",
+    "configure:ios": "node scripts/configure-ios.mjs",
+    "update:skadnetwork": "node scripts/update-skadnetwork.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "npm run build:bridge && node --test \"test/**/*.test.js\"",
+    "sync": "npm run build:bridge && cap sync ios && node scripts/configure-ios.mjs",
+    "test:e2e": "node --test \"e2e/*.test.js\"",
+    "levels": "node scripts/build-levels.mjs",
+    "art": "node scripts/make-art.mjs",
+    "screenshots": "node scripts/make-screenshots.mjs"
+  },
+  "dependencies": {
+    "@capacitor-community/admob": "^8.3.0",
+    "@capacitor/app": "^8.1.2",
+    "@capacitor/browser": "^8.0.5",
+    "@capacitor/core": "^8.6.2",
+    "@capacitor/haptics": "^8.0.2",
+    "@capacitor/ios": "^8.6.2",
+    "@capacitor/preferences": "^8.0.1",
+    "@capacitor/share": "^8.0.3",
+    "@capacitor/splash-screen": "^8.0.2",
+    "@capgo/native-purchases": "^8.9.16"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "esbuild": "^0.28.2",
+    "plist": "^3.1.1",
+    "typescript": "^7.0.2",
+    "xcode": "^4.0.0"
+  }
+}

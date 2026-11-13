@@ -1,0 +1,163 @@
+# iOS build check
+#
+# Proves, on a Mac in the cloud, that the app still compiles: it installs the JavaScript
+# packages, copies the web game into the Xcode project, downloads the Swift packages (Capacitor,
+# Google Mobile Ads and the other plugins) and builds the app for the iPhone simulator. Nothing
+# is signed and nothing is uploaded, so it needs no secrets and no Apple account.
+#
+# TEMPLATE. To use it, copy this file to .github/workflows/ios-build.yml and replace two
+# placeholders everywhere they occur (each is used twice below):
+#
+#   __APP_DIR__   the folder that holds app.config.json, from the top of the repository,
+#                 without a leading or trailing slash
+#   __WEB_DIR__   the folder of the web game, written the same way. It must be the folder that
+#                 "webDir" in app.config.json points at; the first step below checks that.
+#
+# The web folder has to be repeated here because GitHub decides whether to start the workflow
+# (the "paths" filter) before it has looked inside any file. Everything after the first step
+# takes the web folder from app.config.json.
+#
+# NOT YET RUN: this workflow was written on Linux and has never executed on a macOS runner.
+
+name: iOS build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '__APP_DIR__/**'
+      - '__WEB_DIR__/**'
+      - '.github/workflows/ios-build.yml'
+
+env:
+  APP_DIR: __APP_DIR__
+  WEB_DIR: __WEB_DIR__
+
+permissions:
+  contents: read
+
+# A newer push to the same branch replaces a build that is still running (Mac minutes are
+# billed at a higher rate than Linux minutes).
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Simulator build (unsigned)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check that this workflow watches the right web folder
+        run: |
+          node -e '
+            const path = require("node:path");
+            const appDir = process.env.APP_DIR;
+            const config = require(path.resolve(appDir, "app.config.json"));
+            const webDir = path.relative(process.cwd(), path.resolve(appDir, config.webDir)).split(path.sep).join("/");
+            if (webDir !== process.env.WEB_DIR) {
+              console.log(`::error::app.config.json says the web game is in "${webDir}", but this workflow watches "${process.env.WEB_DIR}". Change WEB_DIR and the paths filter at the top of the workflow file.`);
+              process.exit(1);
+            }
+            console.log(`Wrapper: ${appDir}   Web game: ${webDir}`);
+          '
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      # App Store Connect only accepts builds from a current Xcode, and GitHub adds and removes
+      # Xcode versions on its runners over time. So no version is named here: the script picks
+      # the newest one installed that is not a beta or release candidate.
+      - name: Select the newest stable Xcode on the runner
+        run: |
+          xcode_app="$(bash "$APP_DIR/scripts/select-xcode.sh")"
+          echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version
+
+      - name: Install JavaScript packages
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Typecheck and test the bridge and the project scripts
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Copy the web game into the Xcode project
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run sync
+
+      # `npm run sync` rebuilds generated files. If that changed a file that is committed, the
+      # commit was made without running it. The build goes on (it uses the fresh files), but
+      # say so.
+      - name: Report committed files that were out of date
+        run: |
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ]; then
+            echo "::warning::npm run sync changed files that are committed. Run it locally and commit the result."
+            echo "$changed"
+          else
+            echo "The committed files match what npm run sync produces."
+          fi
+
+      # The Swift packages are the slow download (the Google Mobile Ads SDK alone is large).
+      # Which versions are fetched follows from the npm packages, so the lock file is the key.
+      - name: Restore downloaded Swift packages
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/SourcePackages
+          key: spm-${{ runner.os }}-${{ hashFiles(format('{0}/package-lock.json', env.APP_DIR)) }}
+          restore-keys: |
+            spm-${{ runner.os }}-
+
+      - name: Resolve Swift packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$APP_DIR/ios/App/App.xcodeproj" \
+            -scheme App \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages"
+
+      - name: Build for the iPhone simulator (no signing)
+        run: |
+          xcodebuild build \
+            -project "$APP_DIR/ios/App/App.xcodeproj" \
+            -scheme App \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -clonedSourcePackagesDirPath "$RUNNER_TEMP/SourcePackages" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -hideShellScriptEnvironment \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Check what was built
+        run: |
+          app="$RUNNER_TEMP/DerivedData/Build/Products/Debug-iphonesimulator/App.app"
+          plist() { /usr/libexec/PlistBuddy -c "Print :$1" "$app/Info.plist"; }
+          need() { if ! "$@"; then echo "::error::The built app failed this check: $*"; exit 1; fi; }
+          need test -d "$app"
+          need test -f "$app/public/index.html"
+          need test -f "$app/public/vendor/native-bridge.js"
+          need test -f "$app/capacitor.config.json"
+          need test -f "$app/PrivacyInfo.xcprivacy"
+          need test ! -e "$app/Products.storekit"
+          need test "$(plist UIDeviceFamily:0)" = "1"
+          {
+            echo "### iOS simulator build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Xcode | $(xcodebuild -version | tr '\n' ' ') |"
+            echo "| Name | $(plist CFBundleDisplayName) |"
+            echo "| Bundle id | $(plist CFBundleIdentifier) |"
+            echo "| Version (build) | $(plist CFBundleShortVersionString) ($(plist CFBundleVersion)) |"
+            echo "| AdMob app id | $(plist GADApplicationIdentifier) |"
+            echo "| Built with SDK | $(plist DTSDKName) |"
+          } >> "$GITHUB_STEP_SUMMARY"
