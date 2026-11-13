@@ -83,8 +83,9 @@ export function createSession(level, { taps = [], hearts = Infinity } = {}) {
     get stars() {
       return starsFor(slips);
     },
-    /** Blocks that have not gone yet. */
+    /** Blocks that have not gone yet (none once the board is full, even if one was never needed). */
     get remaining() {
+      if (isSolved(level, pos)) return 0;
       let n = 0;
       for (let i = 0; i < level.blocks.length; i++) if (!(pos.done & (1 << i))) n++;
       return n;

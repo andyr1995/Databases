@@ -27,18 +27,27 @@ export function dailyNumber(key) {
   return daysBetween(DAILY_EPOCH, key) + 1;
 }
 
+/** The number to show a player: a device clock set before launch day must not produce "Daily #0". */
+export function dailyLabelNumber(key) {
+  return Math.max(1, dailyNumber(key));
+}
+
 /** Milliseconds until the next local midnight. */
 export function msUntilTomorrow(now = new Date()) {
   const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   return next.getTime() - now.getTime();
 }
 
-/** "7h 12m" / "12m 05s" style countdown. */
-export function formatCountdown(ms) {
+/**
+ * "7h 12m" / "12m 05s" style countdown.
+ * With `seconds: false` the last hour reads "12m" (for places that are not redrawn every second).
+ */
+export function formatCountdown(ms, { seconds = true } = {}) {
   const s = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   if (h > 0) return `${h}h ${pad(m)}m`;
+  if (!seconds) return `${Math.max(1, Math.ceil(s / 60))}m`;
   return `${m}m ${pad(s % 60)}s`;
 }
 
@@ -49,8 +58,8 @@ export function formatCountdown(ms) {
  */
 export function liveStreak(daily, today = dateKey()) {
   if (!daily.lastSolved) return 0;
-  const gap = daysBetween(daily.lastSolved, today);
-  return gap === 0 || gap === 1 ? daily.streak : 0;
+  // A date that has moved backwards (a flight west, a clock correction) must not hide the streak.
+  return daysBetween(daily.lastSolved, today) <= 1 ? daily.streak : 0;
 }
 
 /**
@@ -58,8 +67,9 @@ export function liveStreak(daily, today = dateKey()) {
  * @returns {{streak:number,best:number,lastSolved:string}}
  */
 export function applyDailySolve(daily, today = dateKey()) {
-  if (daily.lastSolved === today) {
-    return { streak: daily.streak, best: daily.best, lastSolved: today };
+  if (daily.lastSolved && daysBetween(daily.lastSolved, today) <= 0) {
+    // Solved today already, or the calendar has moved backwards: nothing to add, nothing to lose.
+    return { streak: daily.streak, best: daily.best, lastSolved: daily.lastSolved };
   }
   const continued = daily.lastSolved && daysBetween(daily.lastSolved, today) === 1;
   const streak = continued ? daily.streak + 1 : 1;

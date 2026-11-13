@@ -16,8 +16,15 @@ export function createShell(root) {
   /** @type {{el: HTMLElement, destroy?: () => void} | null} */
   let current = null;
   let toastTimer = null;
-  /** @type {Array<{close: () => void}>} */
+  /** @type {Array<{close: () => void, dismissable?: boolean, restoreFocus?: () => void}>} */
   const sheets = [];
+
+  // Escape closes the top sheet, if it is one that may be dismissed.
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !sheets.length) return;
+    const top = sheets[sheets.length - 1];
+    if (top.dismissable) top.close();
+  });
 
   return {
     /** Replace the visible screen. */
@@ -50,6 +57,7 @@ export function createShell(root) {
       const backdrop = h('div.backdrop');
       const wrap = h('div.sheet-wrap', null, backdrop, panel);
 
+      /** @type {{el: HTMLElement, close: () => void, dismissable?: boolean, restoreFocus?: () => void}} */
       const handle = {
         el: panel,
         close() {
@@ -59,6 +67,7 @@ export function createShell(root) {
           if (i >= 0) sheets.splice(i, 1);
           wrap.classList.add('out');
           setTimeout(() => wrap.remove(), 220);
+          if (handle.restoreFocus) handle.restoreFocus();
           if (onClose) onClose();
         },
       };
@@ -86,8 +95,19 @@ export function createShell(root) {
       }
       panel.append(h('div.sheet-body', null, body));
       if (dismissable) backdrop.addEventListener('click', () => handle.close());
+      // While a sheet is open the screen behind it cannot be reached by keyboard or screen reader.
+      const before = document.activeElement;
       sheetHost.append(wrap);
       sheets.push(handle);
+      screenHost.inert = true;
+      panel.tabIndex = -1;
+      const first = panel.querySelector('button, input, a[href]');
+      (first instanceof HTMLElement ? first : panel).focus({ preventScroll: true });
+      handle.restoreFocus = () => {
+        if (sheets.length === 0) screenHost.inert = false;
+        if (before instanceof HTMLElement && before.isConnected) before.focus({ preventScroll: true });
+      };
+      handle.dismissable = dismissable;
       return handle;
     },
 

@@ -55,8 +55,70 @@ export function mergeState(base, saved) {
   return out;
 }
 
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const int = (v, lo, hi, fallback) => (Number.isInteger(v) && v >= lo && v <= hi ? v : fallback);
+
+/** A saved attempt, or null if it is not shaped like one. */
+function cleanResume(r) {
+  if (!r || typeof r !== 'object' || !Array.isArray(r.taps)) return null;
+  if (typeof r.id !== 'number' && typeof r.id !== 'string') return null;
+  return {
+    id: r.id,
+    taps: r.taps.filter((b) => Number.isInteger(b) && b >= 0 && b < 30),
+    hints: int(r.hints, 0, 999, 0),
+    extra: int(r.extra, 0, 1, 0),
+    hinted: Number.isInteger(r.hinted) ? r.hinted : -1,
+  };
+}
+
+/**
+ * Make sure every value has the type the game expects, so that a damaged save
+ * (or one from a future version) can never stop the game from starting.
+ */
+export function sanitize(state) {
+  state.level = int(state.level, 1, 1e7, 1);
+  state.hints = int(state.hints, 0, 99999, 3);
+  for (const k of Object.keys(state.stats)) state.stats[k] = int(state.stats[k], 0, 1e9, 0);
+  for (const k of Object.keys(state.stars)) {
+    const v = int(state.stars[k], 1, 3, 0);
+    if (v && /^\d+$/.test(k)) state.stars[k] = v;
+    else delete state.stars[k];
+  }
+  for (const k of Object.keys(state.seen)) state.seen[k] = state.seen[k] === true;
+  const d = state.daily;
+  d.streak = int(d.streak, 0, 1e6, 0);
+  d.best = int(d.best, 0, 1e6, 0);
+  if (typeof d.lastSolved !== 'string' || !DATE.test(d.lastSolved)) {
+    d.lastSolved = null;
+    d.streak = 0;
+  }
+  if (typeof d.repairOffered !== 'string' || !DATE.test(d.repairOffered)) d.repairOffered = null;
+  for (const key of Object.keys(d.history)) {
+    const e = d.history[key];
+    if (!DATE.test(key) || !e || typeof e !== 'object') {
+      delete d.history[key];
+      continue;
+    }
+    d.history[key] = {
+      won: e.won === true,
+      slips: int(e.slips, 0, 99, 0),
+      stars: int(e.stars, 0, 3, 0),
+      hints: int(e.hints, 0, 999, 0),
+      extra: int(e.extra, 0, 1, 0),
+      story: typeof e.story === 'string' ? e.story.replace(/[^01]/g, '').slice(0, 99) : '',
+      taps: typeof e.taps === 'string' ? e.taps.replace(/[^0-9a-t]/g, '').slice(0, 99) : '',
+    };
+  }
+  state.resume.campaign = cleanResume(state.resume.campaign);
+  state.resume.daily = cleanResume(state.resume.daily);
+  state.ads.levelsSince = int(state.ads.levelsSince, 0, 1e6, 0);
+  return state;
+}
+
 export function createStore(persist) {
   let timer = null;
+  /** Something has changed since the last write. */
+  let dirty = false;
   const store = {
     state: defaultState(),
 
@@ -68,12 +130,14 @@ export function createStore(persist) {
       } catch {
         saved = null;
       }
-      store.state = mergeState(defaultState(), saved);
+      store.state = sanitize(mergeState(defaultState(), saved));
+      dirty = false;
       return store.state;
     },
 
     /** Write soon. Calls made close together are folded into one write. */
     save() {
+      dirty = true;
       if (timer) return;
       timer = setTimeout(() => {
         timer = null;
@@ -81,18 +145,34 @@ export function createStore(persist) {
       }, 150);
     },
 
-    /** Write now (used when the app is about to be hidden). */
+    /**
+     * Write now (used when the app is about to be hidden). Does nothing if
+     * nothing changed, so a copy of the game left open in another browser tab
+     * cannot overwrite newer progress just by being closed.
+     */
     flush() {
       if (timer) {
         clearTimeout(timer);
         timer = null;
       }
+      if (!dirty) return Promise.resolve();
+      dirty = false;
       try {
-        return persist.set(KEY, JSON.stringify(store.state));
+        return Promise.resolve(persist.set(KEY, JSON.stringify(store.state)));
       } catch {
         return Promise.resolve();
       }
     },
+
+    /** Forget everything and start again (offered if a save cannot be used at all). */
+    async reset() {
+      store.state = defaultState();
+      dirty = true;
+      await store.flush();
+    },
   };
   return store;
 }
+
+/** The storage key of the save, for anything that needs to watch it. */
+export const SAVE_KEY = KEY;

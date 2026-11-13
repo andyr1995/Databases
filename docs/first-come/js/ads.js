@@ -30,7 +30,7 @@ export function interstitialDue(s, rules = AD_RULES) {
  * @param {{state: any, save: () => void}} deps.store
  * @param {typeof AD_RULES} [deps.rules]
  * @param {() => number} [deps.now]
- * @param {{onOpen?: () => void, onClose?: () => void, onBannerHeight?: (px: number) => void, onEntitlement?: (owned: boolean) => void}} [deps.hooks]
+ * @param {{onOpen?: () => void, onClose?: () => void, onBannerHeight?: (px: number) => void, onBannerWanted?: (wanted: boolean) => void, onEntitlement?: (owned: boolean) => void}} [deps.hooks]
  */
 export function createAdManager({ platform, store, rules = AD_RULES, now = () => Date.now(), hooks = {} }) {
   // Opening the app counts as "just saw one": nobody gets an advert in their first two minutes back.
@@ -43,7 +43,11 @@ export function createAdManager({ platform, store, rules = AD_RULES, now = () =>
 
   function syncBanner() {
     const p = provider();
-    if (bannerWanted && !adsOff() && p.enabled()) p.showBanner().catch(() => {});
+    const show = bannerWanted && !adsOff() && p.enabled();
+    // Tell the layout first, so it can keep a strip free before the banner has loaded
+    // (otherwise the board would jump when the advert arrives a moment into a level).
+    if (hooks.onBannerWanted) hooks.onBannerWanted(show);
+    if (show) p.showBanner().catch(() => {});
     else p.hideBanner().catch(() => {});
   }
 
@@ -88,7 +92,9 @@ export function createAdManager({ platform, store, rules = AD_RULES, now = () =>
         console.warn('Advert provider failed to start', e);
       }
       syncBanner();
-      // Confirm the purchase with the store in the background (covers reinstalls and refunds).
+      // Ask the store in the background whether Remove Ads is owned (covers a reinstall or a
+      // new phone). Only a definite yes is acted on: "no" cannot be told apart from "could not
+      // reach the store", so a purchase is never taken away here.
       if (platform.iap.available()) {
         platform.iap
           .owned()

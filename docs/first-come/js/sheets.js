@@ -181,8 +181,9 @@ export function maybeOfferStreakRepair(app) {
   const today = dateKey();
   if (!d.lastSolved || d.streak < 2 || d.repairOffered === today) return false;
   if (daysBetween(d.lastSolved, today) !== 2) return false;
-  const how = ads.rewardMode();
-  if (how === 'none') return false;
+  // Offer it even if no video has loaded yet (adverts are still starting when the app
+  // opens): the button checks again when it is pressed.
+  const free = ads.rewardMode() === 'free';
 
   d.repairOffered = today;
   store.save();
@@ -197,6 +198,10 @@ export function maybeOfferStreakRepair(app) {
       'button.primary',
       {
         onclick: async () => {
+          if (ads.rewardMode() === 'none') {
+            shell.toast('No video is available right now. Try again in a moment.');
+            return;
+          }
           const earned = await ads.watchRewarded();
           if (!earned) {
             shell.toast('Watch the whole video to save your streak.');
@@ -211,8 +216,8 @@ export function maybeOfferStreakRepair(app) {
           app.refresh();
         },
       },
-      how === 'ad' ? icon(ICONS.video, { size: 22 }) : null,
-      how === 'ad' ? 'Watch a video to save it' : 'Save my streak',
+      free ? null : icon(ICONS.video, { size: 22 }),
+      free ? 'Save my streak' : 'Watch a video to save it',
     ),
     button('button.ghost', { onclick: () => sheet.close() }, 'No thanks'),
   );

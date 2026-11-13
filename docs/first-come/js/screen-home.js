@@ -4,7 +4,8 @@ import { h, icon, ICONS } from './dom.js';
 import { button } from './shell.js';
 import { blockBadge } from './board.js';
 import { N, E, S, W } from './engine.js';
-import { dateKey, dailyNumber, liveStreak, msUntilTomorrow, formatCountdown } from './dates.js';
+import { dateKey, dailyLabelNumber, liveStreak, msUntilTomorrow, formatCountdown } from './dates.js';
+import { prepareCampaignLevel } from './levels.js';
 import { APP } from './config.js';
 
 export function homeScreen(app) {
@@ -74,10 +75,10 @@ export function homeScreen(app) {
     playSub.textContent = stars > 0 ? `${stars} ${stars === 1 ? 'star' : 'stars'} collected` : 'Start here';
 
     const done = s.daily.history[today];
-    dailyTitle.textContent = `Daily #${dailyNumber(today)}`;
+    dailyTitle.textContent = `Daily #${dailyLabelNumber(today)}`;
     if (done) {
       const mark = done.won ? '★'.repeat(done.stars) : 'Out of hearts';
-      dailyState.textContent = `${mark} · next in ${formatCountdown(msUntilTomorrow())}`;
+      dailyState.textContent = `${mark} · next in ${formatCountdown(msUntilTomorrow(), { seconds: false })}`;
     } else {
       dailyState.textContent =
         s.resume.daily && s.resume.daily.id === today ? 'Carry on today’s puzzle' : 'One puzzle a day, the same for everyone';
@@ -92,6 +93,8 @@ export function homeScreen(app) {
 
   refresh();
   timer = setInterval(refresh, 15000);
+  // Far into the game the next level has to be built first; start now so Play is instant.
+  prepareCampaignLevel(store.state.level);
 
   return {
     el,

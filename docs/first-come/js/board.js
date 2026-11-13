@@ -6,7 +6,8 @@ import { N, E, S, W } from './engine.js';
 
 /** Time between one square and the next as a colour spreads. */
 export const STEP_MS = 34;
-const HOLD_MS = 240;
+/** How long a press must last before it becomes a peek instead of a tap (the usual long-press length). */
+const HOLD_MS = 400;
 const NS = 'http://www.w3.org/2000/svg';
 export const COLOURS = 9;
 
@@ -16,6 +17,7 @@ const ARROW = {
   [S]: 'M50 92L36 74h28z',
   [W]: 'M8 50l18-14v28z',
 };
+const EDGE = '#1d1b3a';
 const STEM = { [N]: 'M50 50V28', [E]: 'M50 50H72', [S]: 'M50 50V72', [W]: 'M50 50H28' };
 
 /** The picture on a block: an arrow for each way it reaches, and a number if its reach is limited. */
@@ -23,16 +25,25 @@ export function blockSvg(dirs, len = 0) {
   const svg = document.createElementNS(NS, 'svg');
   svg.setAttribute('viewBox', '0 0 100 100');
   svg.setAttribute('aria-hidden', 'true');
-  let inner = '';
+  let stems = '';
+  let heads = '';
   for (const d of [N, E, S, W]) {
     if (!(dirs & d)) continue;
-    inner += `<path d="${STEM[d]}" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round"/><path d="${ARROW[d]}" fill="#fff"/>`;
+    stems += STEM[d];
+    heads += ARROW[d];
   }
+  // Drawn twice: a dark edge underneath, then white on top. White alone is
+  // close to invisible on the yellow and green blocks.
+  let inner =
+    `<g fill="none" stroke="${EDGE}" stroke-opacity=".5" stroke-linecap="round" stroke-linejoin="round">` +
+    `<path d="${stems}" stroke-width="15"/><path d="${heads}" stroke-width="6"/>` +
+    `<circle cx="50" cy="50" r="${len ? 17 : 10}" stroke-width="6"/></g>` +
+    `<path d="${stems}" fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round"/><path d="${heads}" fill="#fff"/>`;
   if (len) {
     inner +=
       `<circle cx="50" cy="50" r="17" fill="#fff"/>` +
       `<text x="50" y="51" text-anchor="middle" dominant-baseline="central" font-size="24" font-weight="800" ` +
-      `font-family="ui-rounded,system-ui,sans-serif" fill="#1d1b3a">${len}</text>`;
+      `font-family="ui-rounded,system-ui,sans-serif" fill="${EDGE}">${len}</text>`;
   } else {
     inner += `<circle cx="50" cy="50" r="10" fill="#fff"/>`;
   }
@@ -258,45 +269,54 @@ export function createBoard(host, level, { onTap, onPeek }) {
   }
 
   // ---- input: tap to go, hold to peek ----
-  /** @type {{b: number, id: number, peeked: boolean, timer: any} | null} */
-  let held = null;
+  // Each finger is tracked on its own, so two thumbs can play at once.
+  /** @type {Map<number, {b: number, peeked: boolean, timer: any}>} */
+  const presses = new Map();
   const blockOf = (target) => {
     const btn = target instanceof Element ? target.closest('.block') : null;
     return btn && !(/** @type {HTMLButtonElement} */ (btn).disabled) ? Number(btn.getAttribute('data-b')) : -1;
   };
-  const release = () => {
-    if (!held) return null;
-    clearTimeout(held.timer);
-    const was = held;
-    held = null;
-    if (was.peeked) onPeek(was.b, false);
-    return was;
+  const release = (id) => {
+    const press = presses.get(id);
+    if (!press) return null;
+    presses.delete(id);
+    clearTimeout(press.timer);
+    if (press.peeked) onPeek(press.b, false);
+    return press;
+  };
+  const releaseAll = () => {
+    for (const id of [...presses.keys()]) release(id);
   };
   el.addEventListener('pointerdown', (e) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const b = blockOf(e.target);
     if (b < 0) return;
-    release();
-    const mine = { b, id: e.pointerId, peeked: false, timer: 0 };
-    mine.timer = setTimeout(() => {
-      if (held !== mine) return;
-      mine.peeked = true;
+    release(e.pointerId);
+    const press = { b, peeked: false, timer: 0 };
+    press.timer = setTimeout(() => {
+      if (presses.get(e.pointerId) !== press) return;
+      press.peeked = true;
       onPeek(b, true);
     }, HOLD_MS);
-    held = mine;
+    presses.set(e.pointerId, press);
   });
   el.addEventListener('pointerup', (e) => {
-    if (!held || e.pointerId !== held.id) return;
-    const was = release();
-    if (was && !was.peeked && blockOf(document.elementFromPoint(e.clientX, e.clientY)) === was.b) onTap(was.b);
+    const press = release(e.pointerId);
+    if (press && !press.peeked && blockOf(document.elementFromPoint(e.clientX, e.clientY)) === press.b) onTap(press.b);
   });
-  el.addEventListener('pointercancel', release);
-  el.addEventListener('pointerleave', release);
+  el.addEventListener('pointercancel', (e) => release(e.pointerId));
+  el.addEventListener('pointerleave', (e) => release(e.pointerId));
   // Keyboard and switch access: Enter or Space on a focused block.
   el.addEventListener('click', (e) => {
     if (e.detail !== 0) return;
     const b = blockOf(e.target);
-    if (b >= 0) onTap(b);
+    if (b < 0) return;
+    onTap(b);
+    // If the block went, it is now disabled: keep the keyboard on the board.
+    if (blockEls[b].disabled) {
+      const next = blockEls.find((btn) => !btn.disabled);
+      if (next) next.focus();
+    }
   });
   el.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -319,7 +339,7 @@ export function createBoard(host, level, { onTap, onPeek }) {
     destroy() {
       for (const id of timers) clearTimeout(id);
       timers.clear();
-      release();
+      releaseAll();
       if (observer) observer.disconnect();
       else window.removeEventListener('resize', layout);
       el.remove();

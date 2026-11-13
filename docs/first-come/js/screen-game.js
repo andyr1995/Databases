@@ -4,9 +4,9 @@ import { h, icon, ICONS } from './dom.js';
 import { button } from './shell.js';
 import { createBoard, STEP_MS } from './board.js';
 import { createSession } from './session.js';
-import { campaignLevel, dailyLevel, featuresOf } from './levels.js';
+import { campaignLevel, prepareCampaignLevel, dailyLevel, featuresOf } from './levels.js';
 import { starsFor } from './engine.js';
-import { dateKey, dailyNumber, applyDailySolve, liveStreak, msUntilTomorrow, formatCountdown } from './dates.js';
+import { dateKey, dailyLabelNumber, applyDailySolve, liveStreak, msUntilTomorrow, formatCountdown } from './dates.js';
 import { sfx } from './sfx.js';
 import { unlockAudio } from './synth.js';
 import { dailyShare, packStory, unpackStory } from './share.js';
@@ -22,6 +22,8 @@ const FEATURE_TIPS = {
   arrows: 'The arrows show which ways a block reaches.',
   short: 'A number is how far each arm can reach.',
 };
+/** When both are new at once (a first Daily can have both). */
+const BOTH_TIPS = 'Arrows show which ways a block reaches. A number is how far.';
 const SLIP_TIP = 'That would leave squares nobody can reach. Try another order.';
 const DAY_FORMAT = { weekday: 'short', day: 'numeric', month: 'short' };
 
@@ -44,9 +46,16 @@ export function gameScreen(app, { mode, level: startAt }) {
   let hintsUsed = 0;
   /** Extra hearts earned today (Daily only). */
   let extraHearts = 0;
-  /** How many taps had been made when the current hint was paid for, so asking again is free. */
-  let hintPaidAt = -1;
+  /**
+   * The position (as its "blocks gone" mask) that a hint has been paid for, or -1.
+   * A slip puts the board back exactly, and a restart of the app restores it, so
+   * in both cases the hint is shown again without charging twice.
+   */
+  let hintedAt = -1;
   let busy = false;
+  /** True while a slip is being shown and pulled back; one tap made meanwhile is kept. */
+  let slipping = false;
+  let queuedTap = -1;
   let destroyed = false;
   let countdownTimer = null;
   const timers = new Set();
@@ -63,7 +72,7 @@ export function gameScreen(app, { mode, level: startAt }) {
   const subtitleEl = h('div.subtitle');
   const leftEl = h('b', { text: '0' });
   const slipsEl = h('b', { text: '0' });
-  const meterEl = h('div.meter', { 'aria-hidden': 'true' });
+  const meterEl = h('div.meter', { role: 'img' });
   const coachEl = h('div.coach', { 'aria-live': 'polite' });
   const boardHost = h('div.board-host');
   const hintBadge = h('span.badge');
@@ -114,9 +123,10 @@ export function gameScreen(app, { mode, level: startAt }) {
   const resumeId = () => (daily ? today : levelNo);
 
   function saveResume() {
-    store.state.resume[mode] = session.taps.length
-      ? { id: resumeId(), taps: session.taps.slice(), hints: hintsUsed, extra: extraHearts }
-      : null;
+    store.state.resume[mode] =
+      session.taps.length || hintedAt >= 0
+        ? { id: resumeId(), taps: session.taps.slice(), hints: hintsUsed, extra: extraHearts, hinted: hintedAt }
+        : null;
     store.save();
   }
 
@@ -134,11 +144,13 @@ export function gameScreen(app, { mode, level: startAt }) {
       for (let i = 0; i < total; i++) {
         meterEl.append(h(`span.heart${i < session.heartsLeft ? '.on' : ''}`, null, icon(ICONS.heart, { size: 26, fill: true })));
       }
+      meterEl.setAttribute('aria-label', `${session.heartsLeft} of ${total} hearts left`);
     } else {
       const potential = starsFor(session.slips);
       for (let i = 0; i < 3; i++) {
         meterEl.append(h(`span.star${i < potential ? '.on' : ''}`, null, icon(ICONS.star, { size: 26, fill: true })));
       }
+      meterEl.setAttribute('aria-label', `${potential} of 3 stars still possible`);
     }
     const over = session.solved || session.lost;
     hintBtn.disabled = over;
@@ -152,11 +164,14 @@ export function gameScreen(app, { mode, level: startAt }) {
     if (n > 0) {
       hintBadge.className = 'badge';
       hintBadge.textContent = String(n);
+      hintBtn.setAttribute('aria-label', `Hint, ${n} left`);
     } else if (ads.rewardMode() === 'free') {
       hintBadge.className = 'badge hidden';
+      hintBtn.setAttribute('aria-label', 'Hint');
     } else {
       hintBadge.className = 'badge video';
       hintBadge.append(icon(ICONS.video, { size: 14 }));
+      hintBtn.setAttribute('aria-label', 'Hint, watch a video');
     }
   }
 
@@ -178,16 +193,19 @@ export function gameScreen(app, { mode, level: startAt }) {
       hintsUsed = saved.hints || 0;
       extraHearts = daily ? saved.extra || 0 : 0;
     }
-    hintPaidAt = -1;
     busy = false;
+    slipping = false;
+    queuedTap = -1;
     session = createSession(level, { taps, hearts: daily ? 3 + extraHearts : Infinity });
+    // A hint that was paid for before the app closed is still owed, if the board is where it was.
+    hintedAt = !finished && mine && saved.hinted === session.position.done ? saved.hinted : -1;
 
     if (board) board.destroy();
     board = createBoard(boardHost, level, { onTap, onPeek });
     board.reset(session.position);
 
     if (daily) {
-      titleEl.textContent = `Daily #${dailyNumber(today)}`;
+      titleEl.textContent = `Daily #${dailyLabelNumber(today)}`;
       subtitleEl.textContent = new Date().toLocaleDateString(undefined, DAY_FORMAT);
     } else {
       titleEl.textContent = `Level ${levelNo}`;
@@ -195,7 +213,9 @@ export function gameScreen(app, { mode, level: startAt }) {
     }
     updateHud();
     showTips();
-    if (!daily) later(() => campaignLevel(levelNo + 1), 1500);
+    showPaidHint();
+    // Beyond the shipped levels the next one has to be built; start on it now, in the background.
+    if (!daily) prepareCampaignLevel(levelNo + 1);
 
     if (finished) {
       busy = true;
@@ -216,18 +236,24 @@ export function gameScreen(app, { mode, level: startAt }) {
       return;
     }
     const features = featuresOf(level);
-    const tips = [
-      ['arrows', features.lines || features.bends],
-      ['short', features.short],
-    ];
-    for (const [key, present] of tips) {
-      if (present && !seen[key]) {
-        seen[key] = true;
-        store.save();
-        setCoach(FEATURE_TIPS[key]);
-        return;
-      }
+    const fresh = [];
+    if ((features.lines || features.bends) && !seen.arrows) fresh.push('arrows');
+    if (features.short && !seen.short) fresh.push('short');
+    if (!fresh.length) return;
+    for (const key of fresh) seen[key] = true;
+    store.save();
+    setCoach(fresh.length > 1 ? BOTH_TIPS : FEATURE_TIPS[fresh[0]]);
+  }
+
+  /** Put the hint ring back if a hint has been paid for at this exact position. */
+  function showPaidHint() {
+    if (hintedAt < 0 || session.solved || session.lost) return;
+    if (hintedAt !== session.position.done) {
+      hintedAt = -1;
+      return;
     }
+    const safe = session.hint();
+    if (safe >= 0) board.hint(safe);
   }
 
   // ---- play ----
@@ -246,12 +272,18 @@ export function gameScreen(app, { mode, level: startAt }) {
   }
 
   function onTap(b) {
-    if (busy || destroyed || shell.sheetOpen()) return;
+    if (destroyed || shell.sheetOpen()) return;
+    if (busy) {
+      // A tap made while a slip is being pulled back is not thrown away.
+      if (slipping) queuedTap = b;
+      return;
+    }
     unlockAudio();
     const result = session.tap(b);
     if (!result) return;
     board.unpeek();
-    hintPaidAt = -1;
+    // A slip leaves the board exactly as it was, so a paid hint still stands.
+    if (result.kind !== 'slip') hintedAt = -1;
 
     if (result.kind === 'empty') {
       board.markDone(b);
@@ -263,6 +295,8 @@ export function gameScreen(app, { mode, level: startAt }) {
 
     if (result.kind === 'slip') {
       busy = true;
+      slipping = true;
+      queuedTap = -1;
       const timing = board.slip(b, result.arms, result.stranded);
       sfx.slip();
       app.haptic('error');
@@ -270,11 +304,16 @@ export function gameScreen(app, { mode, level: startAt }) {
       saveResume();
       updateHud();
       later(() => {
+        slipping = false;
+        const next = queuedTap;
+        queuedTap = -1;
         if (result.lost) {
           offerHeart();
-        } else {
-          busy = false;
+          return;
         }
+        busy = false;
+        showPaidHint();
+        if (next >= 0) onTap(next);
       }, timing.duration);
       return;
     }
@@ -292,7 +331,7 @@ export function gameScreen(app, { mode, level: startAt }) {
     if (daily || busy || session.taps.length === 0) return;
     sfx.restart();
     session.restart();
-    hintPaidAt = -1;
+    hintedAt = -1;
     hintsUsed = 0;
     busy = false;
     board.reset(session.position);
@@ -328,12 +367,12 @@ export function gameScreen(app, { mode, level: startAt }) {
     if (busy || session.solved || session.lost) return;
     const safe = session.hint();
     if (safe < 0) return;
-    if (hintPaidAt !== session.taps.length) {
+    if (hintedAt !== session.position.done) {
       busy = true;
       const ok = await payForHelp('hint');
       busy = false;
       if (destroyed || !ok) return;
-      hintPaidAt = session.taps.length;
+      hintedAt = session.position.done;
       hintsUsed++;
       store.state.stats.hintsUsed++;
       saveResume();
@@ -520,7 +559,13 @@ export function gameScreen(app, { mode, level: startAt }) {
       if (won && streak >= 1) body.push(h('div.streak', null, icon(ICONS.flame, { size: 22 }), `${streak}-day streak`));
       const countdown = h('p.countdown');
       const tick = () => {
-        countdown.textContent = `Next puzzle in ${formatCountdown(msUntilTomorrow())}`;
+        if (dateKey() === today) {
+          countdown.textContent = `Next puzzle in ${formatCountdown(msUntilTomorrow())}`;
+          return;
+        }
+        // Midnight has passed (perhaps while the app was in the background): the new puzzle is ready.
+        clearInterval(countdownTimer);
+        countdown.replaceWith(button('button.secondary', { onclick: () => leave(() => app.play('daily')) }, 'Play today’s puzzle'));
       };
       tick();
       clearInterval(countdownTimer);
@@ -531,7 +576,7 @@ export function gameScreen(app, { mode, level: startAt }) {
           {
             onclick: async () => {
               const outcome = await app.platform.share(
-                dailyShare({ number: dailyNumber(today), story, won, slips, stars, streak: won ? streak : 0 }),
+                dailyShare({ number: dailyLabelNumber(today), story, won, slips, stars, streak: won ? streak : 0 }),
               );
               if (outcome === 'copied') shell.toast('Copied. Paste it to a friend!');
               else if (outcome === 'failed') shell.toast('Sharing is not available here.');
@@ -575,8 +620,16 @@ export function gameScreen(app, { mode, level: startAt }) {
 
   return {
     el,
-    /** Other parts of the app changed something the HUD shows (hints, adverts). */
-    refresh: updateHud,
+    /** Called when the app comes back to the front, and when hints or adverts change. */
+    refresh() {
+      if (destroyed) return;
+      // An untouched Daily left open past midnight is yesterday's: swap it for today's.
+      if (daily && dateKey() !== today && session.taps.length === 0 && !shell.sheetOpen()) {
+        app.play('daily');
+        return;
+      }
+      updateHud();
+    },
     destroy() {
       destroyed = true;
       for (const id of timers) clearTimeout(id);

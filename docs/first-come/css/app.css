@@ -13,6 +13,9 @@
   --bad: #ff5a6e;
   /* Height of the native advert banner at the bottom, set from JavaScript. */
   --banner: 0px;
+  /* Room kept free for a banner that is wanted but has not loaded yet. */
+  --banner-space: 0px;
+  --sheet: #24275e;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   color-scheme: dark;
@@ -68,6 +71,10 @@ p {
   margin: 0;
 }
 
+:root.banner-wanted {
+  --banner-space: calc(62px + var(--safe-bottom));
+}
+
 .hidden {
   display: none !important;
 }
@@ -88,7 +95,8 @@ p {
   width: 100%;
   max-width: 520px;
   height: 100%;
-  padding: var(--safe-top) env(safe-area-inset-right, 0px) max(var(--safe-bottom), var(--banner)) env(safe-area-inset-left, 0px);
+  padding: var(--safe-top) env(safe-area-inset-right, 0px) max(var(--safe-bottom), var(--banner), var(--banner-space))
+    env(safe-area-inset-left, 0px);
 }
 
 .screen {
@@ -177,6 +185,8 @@ p {
   padding: 18px 22px 18px;
   justify-content: space-between;
   gap: 16px;
+  /* With very large system text the menu can outgrow a small screen: let it scroll. */
+  overflow-y: auto;
 }
 .hero {
   text-align: center;
@@ -331,8 +341,9 @@ p {
   color: #ff5a7a;
 }
 .coach {
-  min-height: 44px;
-  padding: 4px 22px 0;
+  /* A fixed two-line slot, so the board never moves when a message appears. */
+  height: 46px;
+  padding: 2px 22px 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -487,10 +498,14 @@ p {
   animation: claim-out 0.18s ease-in var(--back, 0ms) forwards;
 }
 
+.board {
+  /* The game handles every touch on the board itself, so a finger that drifts is still a tap. */
+  touch-action: none;
+}
 .block {
   pointer-events: auto;
   z-index: 2;
-  touch-action: manipulation;
+  touch-action: none;
 }
 .block .face {
   position: absolute;
@@ -633,7 +648,7 @@ p {
 
 .sheet-host {
   position: fixed;
-  inset: 0 0 var(--banner) 0;
+  inset: 0 0 max(var(--banner), var(--banner-space)) 0;
   z-index: 20;
   pointer-events: none;
 }
@@ -661,7 +676,7 @@ p {
   overscroll-behavior: contain;
   padding: 16px 20px calc(20px + var(--safe-bottom));
   border-radius: 28px 28px 0 0;
-  background: #24275e;
+  background: var(--sheet);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.4);
   animation: rise 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.05);
 }
@@ -674,11 +689,18 @@ p {
   transition: opacity 0.2s;
 }
 .sheet-head {
+  /* Stays in view while a long sheet scrolls, so the close button is always reachable. */
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   min-height: 46px;
-  margin-bottom: 12px;
+  margin: -16px -20px 8px;
+  padding: 14px 20px 6px;
+  border-radius: 28px 28px 0 0;
+  background: var(--sheet);
 }
 .sheet-head h2 {
   font-size: 22px;
@@ -965,12 +987,18 @@ p {
   text-align: center;
 }
 .fatal button {
-  margin-top: 16px;
+  display: block;
+  margin: 16px auto 0;
   padding: 12px 22px;
   border-radius: 14px;
   background: var(--gold);
   color: #3a2400;
   font-weight: 800;
+}
+.fatal button.quiet {
+  background: none;
+  color: var(--muted);
+  font-weight: 600;
 }
 
 /* ---- short screens ---- */
@@ -986,11 +1014,31 @@ p {
     height: 56px;
   }
   .coach {
-    min-height: 34px;
-    font-size: 15px;
+    height: 40px;
+    font-size: 14.5px;
+    line-height: 1.25;
   }
   .stat b {
     font-size: 26px;
+  }
+}
+
+/* ---- a phone held sideways ---- */
+
+/* The app itself is locked upright; this is for the web version. */
+@media (orientation: landscape) and (max-height: 460px) {
+  #app::after {
+    content: 'Turn your phone upright to play';
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--bg-top);
+    font-size: 20px;
+    font-weight: 800;
+    text-align: center;
   }
 }
 

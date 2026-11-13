@@ -7,7 +7,7 @@
 // the level is, and levels outside the wanted band are thrown away.
 
 import { makeRng } from './rng.js';
-import { N, E, S, W, reach, measure, formatLevel, parseLevel } from './engine.js';
+import { N, E, S, W, arms, reach, measure, formatLevel, parseLevel } from './engine.js';
 
 const ALL = N | E | S | W;
 /** Shape pools. Repeats make a shape more likely. */
@@ -28,7 +28,7 @@ export const SHAPES = {
  * @property {number} luckMin      wanted band for "a random tapper finishes it"
  * @property {number} luckMax
  * @property {boolean} [beatBots]  reject levels that an obvious habit solves
- * @property {boolean} [needOdd]   must contain a block that is not a plain plus
+ * @property {'arrows'|'number'} [need]  must contain a block with fewer than four arrows / a number that matters
  */
 
 function connected(gap, w, h) {
@@ -113,6 +113,30 @@ const BOTS = [
 export const anyBotSolves = (level) => BOTS.some((bot) => botSolves(level, bot));
 
 /**
+ * Remove decoration that could mislead: an arrow that points straight at a wall
+ * can never claim anything, and a number that is at least as long as every arm
+ * limits nothing. Neither change can alter the puzzle, because a block's reach
+ * on the empty board is the most it will ever have.
+ * Plus blocks are left alone so that the early levels keep a single block shape.
+ * @param {import('./engine.js').Level} level  as built: `squares` is not relied on
+ */
+function tidy(level) {
+  const empty = new Int8Array(level.w * level.h).fill(-1);
+  level.blocks.forEach((block, b) => {
+    const free = { ...block, len: 0 };
+    const sent = arms({ ...level, blocks: level.blocks.map((x, i) => (i === b ? free : x)) }, empty, b);
+    let longest = 0;
+    let dirs = 0;
+    for (const arm of sent) {
+      if (arm.cells.length) dirs |= arm.dir;
+      if (arm.cells.length > longest) longest = arm.cells.length;
+    }
+    if (block.dirs !== ALL && dirs) block.dirs = dirs;
+    if (block.len && block.len >= longest) block.len = 0;
+  });
+}
+
+/**
  * Build one candidate. Returns null if this roll does not make a usable board.
  * @param {ReturnType<typeof makeRng>} rng
  * @param {Recipe} recipe
@@ -182,42 +206,75 @@ export function construct(rng, recipe) {
   }
   if (gaps / size > 0.3) return null;
   if (!connected(gap, w, h)) return null;
-  if (recipe.needOdd && !level.blocks.some((b) => b.dirs !== ALL || b.len)) return null;
+
+  tidy(level);
+  if (recipe.need === 'arrows' && !level.blocks.some((b) => b.dirs !== ALL)) return null;
+  if (recipe.need === 'number' && !level.blocks.some((b) => b.len)) return null;
 
   // Re-read through the text form so blocks are numbered in reading order.
   return crop(parseLevel(formatLevel(level)));
 }
 
-/**
- * Generate a level. Tries candidates in a fixed, seeded order until one fits.
- * @param {string} seed
- * @param {Recipe} recipe
- * @param {{tries?: number}} [opts]
- * @returns {import('./engine.js').Level|null}
- */
-export function generate(seed, recipe, { tries = 1500 } = {}) {
-  for (let t = 0; t < tries; t++) {
-    const level = construct(makeRng(`${seed}/${t}`), recipe);
-    if (!level) continue;
-    const m = measure(level);
-    if (!m || !m.solvable) continue;
-    if (m.luck < recipe.luckMin || m.luck > recipe.luckMax) continue;
-    if (recipe.beatBots && anyBotSolves(level)) continue;
-    return level;
-  }
-  return null;
+/** Does a built candidate fit the recipe's difficulty band? */
+function fits(level, recipe) {
+  const m = measure(level);
+  if (!m || !m.solvable) return false;
+  if (m.luck < recipe.luckMin || m.luck > recipe.luckMax) return false;
+  if (recipe.beatBots && anyBotSolves(level)) return false;
+  return true;
 }
 
-/** If a recipe cannot be met, loosen it step by step rather than fail. */
-export function generateOrRelax(seed, recipe, opts) {
+/**
+ * The whole search for one level, as a generator that pauses after every
+ * candidate. Draining it in one go and stepping it a few milliseconds at a time
+ * give exactly the same level, which lets a phone build a level in the
+ * background without freezing.
+ *
+ * Candidates are tried in a fixed, seeded order. If the recipe cannot be met it
+ * is loosened step by step rather than failing.
+ * @param {string} seed
+ * @param {Recipe} recipe
+ * @returns {Generator<undefined, import('./engine.js').Level, void>}
+ */
+export function* levelSearch(seed, recipe) {
+  for (let t = 0; t < 6000; t++) {
+    const level = construct(makeRng(`${seed}/${t}`), recipe);
+    if (level && fits(level, recipe)) return level;
+    yield;
+  }
   let r = recipe;
   for (let round = 0; round < 4; round++) {
-    const level = generate(`${seed}/r${round}`, r, opts);
-    if (level) return level;
-    r = { ...r, luckMin: r.luckMin / 2, luckMax: Math.min(1, r.luckMax * 1.6), beatBots: false, needOdd: false };
+    for (let t = 0; t < 3000; t++) {
+      const level = construct(makeRng(`${seed}/r${round}/${t}`), r);
+      if (level && fits(level, r)) return level;
+      yield;
+    }
+    r = { ...r, luckMin: r.luckMin / 2, luckMax: Math.min(1, r.luckMax * 1.6), beatBots: false, need: undefined };
     if (round >= 1 && r.blocks > 3) r = { ...r, blocks: r.blocks - 1 };
   }
-  return generate(`${seed}/fallback`, { w: 5, h: 5, blocks: 3, shapes: 'plus', gaps: 2, luckMin: 0, luckMax: 1 }, { tries: 4000 });
+  // A tiny board that always exists.
+  const last = { w: 5, h: 5, blocks: 3, shapes: /** @type {const} */ ('plus'), gaps: 2, luckMin: 0, luckMax: 1 };
+  for (let t = 0; ; t++) {
+    const level = construct(makeRng(`${seed}/fallback/${t}`), last);
+    if (level && fits(level, last)) return level;
+    yield;
+  }
+}
+
+/**
+ * Generate the level for a seed and recipe. The shipped tables are simply this
+ * function's output saved ahead of time, so a level is the same whether it comes
+ * from a table or is built on the device.
+ * @param {string} seed
+ * @param {Recipe} recipe
+ * @returns {import('./engine.js').Level}
+ */
+export function makeLevel(seed, recipe) {
+  const search = levelSearch(seed, recipe);
+  for (;;) {
+    const step = search.next();
+    if (step.done) return step.value;
+  }
 }
 
 // ---- Recipes ---------------------------------------------------------------
@@ -240,9 +297,9 @@ export function campaignRecipe(n) {
   const boss = n % 10 === 0;
   const factor = CHAPTER[(n - 1) % 10];
 
-  if (n === INTRO.lines) return { w: 5, h: 5, blocks: 3, shapes: 'lines', gaps: 2, luckMin: 0.3, luckMax: 1, needOdd: true };
-  if (n === INTRO.bends) return { w: 5, h: 6, blocks: 4, shapes: 'bends', gaps: 2, luckMin: 0.25, luckMax: 1, needOdd: true };
-  if (n === INTRO.short) return { w: 5, h: 6, blocks: 4, shapes: 'lines', short: 0.6, gaps: 2, luckMin: 0.25, luckMax: 1, needOdd: true };
+  if (n === INTRO.lines) return { w: 5, h: 5, blocks: 3, shapes: 'lines', gaps: 2, luckMin: 0.3, luckMax: 1, need: 'arrows' };
+  if (n === INTRO.bends) return { w: 5, h: 6, blocks: 4, shapes: 'bends', gaps: 2, luckMin: 0.25, luckMax: 1, need: 'arrows' };
+  if (n === INTRO.short) return { w: 5, h: 6, blocks: 4, shapes: 'lines', short: 0.6, gaps: 2, luckMin: 0.25, luckMax: 1, need: 'number' };
 
   /** @type {Recipe} */
   let r;

@@ -1,7 +1,7 @@
 // Start-up: choose the platform, load the save, show the first screen.
 
 import { initPlatform, platform } from './platform.js';
-import { createStore } from './store.js';
+import { createStore, SAVE_KEY } from './store.js';
 import { createAdManager } from './ads.js';
 import { createShell } from './shell.js';
 import { homeScreen } from './screen-home.js';
@@ -68,6 +68,8 @@ async function boot() {
         syncAudio();
       },
       onBannerHeight: (px) => document.documentElement.style.setProperty('--banner', `${Math.max(0, Math.round(px))}px`),
+      // Keep a strip free for the banner from the moment one is wanted, so nothing moves when it loads.
+      onBannerWanted: (wanted) => document.documentElement.classList.toggle('banner-wanted', wanted),
       onEntitlement: (owned) => {
         if (owned && !store.state.purchaseBonus) {
           store.state.purchaseBonus = true;
@@ -87,6 +89,15 @@ async function boot() {
   });
   window.addEventListener('pagehide', () => store.flush());
   document.addEventListener('pointerdown', unlockAudio, true);
+  // The web version can be open in two tabs. When the other tab saves, take its
+  // progress rather than later overwriting it with this tab's older copy.
+  window.addEventListener('storage', (e) => {
+    if (e.key !== SAVE_KEY || e.newValue === null) return;
+    store.load().then(() => {
+      setSoundEnabled(store.state.settings.sound);
+      app.goHome();
+    });
+  });
 
   // `?level=12` jumps to a level (handy for testing and for store screenshots).
   const jump = Number(params.get('level'));
@@ -107,6 +118,19 @@ boot().catch((err) => {
   console.error(err);
   const root = document.getElementById('app');
   if (!root) return;
+  // "Try again" covers a passing fault. "Start afresh" is the way out if the saved
+  // progress itself is what stops the game from starting.
   root.innerHTML =
-    '<div class="fatal"><p>Something went wrong starting the game.</p><button type="button" onclick="location.reload()">Try again</button></div>';
+    '<div class="fatal"><p>Something went wrong starting the game.</p>' +
+    '<button type="button" id="fatal-retry">Try again</button>' +
+    '<button type="button" id="fatal-reset" class="quiet">Start afresh (clears progress)</button></div>';
+  document.getElementById('fatal-retry').addEventListener('click', () => location.reload());
+  document.getElementById('fatal-reset').addEventListener('click', async () => {
+    try {
+      await platform.persist.set(SAVE_KEY, '{}');
+    } catch {
+      /* nothing more can be done */
+    }
+    location.reload();
+  });
 });
