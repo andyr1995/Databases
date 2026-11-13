@@ -17,9 +17,13 @@ import {
   UNITS,
 } from './helpers.js';
 
+/** How long an ad of this kind may stay on screen before the game is released anyway. */
+const capOf = (kind) => (kind === 'rewarded' ? T.maxRewardedShowMs : T.maxShowMs);
+
+/** `options.plugin`: an existing fake plugin, to model a page that was loaded again. */
 function setup(options = {}) {
   const clock = createFakeClock();
-  const admob = createFakeAdMob(options.admob);
+  const admob = options.plugin ?? createFakeAdMob(options.admob);
   const app = createFakeAppState();
   const ads = createAdsProvider({
     admob,
@@ -119,9 +123,10 @@ test('rewarded: one showing yields one result, whatever arrives afterwards', asy
   admob.earnReward();
   admob.dismiss('rewarded');
   admob.failToShow('rewarded');
-  await clock.advance(T.maxShowMs);
+  await clock.advance(T.maxRewardedShowMs);
   assert.deepEqual(results, [true]);
   assert.equal(ads.rewardedReady(), true, 'duplicate events do not disturb the slot');
+  assert.equal(admob.preparedCount('rewarded'), 1, 'and the ad it stands for exists');
 });
 
 test('interstitial: resolves true on dismissal, not when the plugin promise resolves', async () => {
@@ -192,10 +197,79 @@ for (const [kind, show] of [
     const { ads, admob, clock } = await started();
     const shown = show(ads);
     if (kind === 'rewarded') admob.earnReward({ event: true, result: false });
-    await clock.advance(T.maxShowMs - 2 * T.heartbeatMs);
+    await clock.advance(capOf(kind) - 2 * T.heartbeatMs);
     assert.equal(await peek(shown), 'pending');
     await clock.advance(2 * T.heartbeatMs);
     assert.equal(await shown, true, 'it was on screen (and for rewarded: the reward had been earned)');
+  });
+
+  // The plugin files prepared ads under the ad unit id. When the ad that was on screen is
+  // finally closed, it deletes whatever is filed there by then.
+  test(`${kind}: an ad still up after the cap takes the next ad with it when it closes; another is loaded`, async () => {
+    const { ads, admob, clock } = await started();
+    const first = show(ads);
+    await clock.advance(capOf(kind));
+    assert.equal(await first, kind === 'interstitial', 'released by the watchdog');
+    assert.equal(admob.adOnScreen(kind), true, 'natively the ad is still up');
+    assert.equal(kind === 'rewarded' ? ads.rewardedReady() : ads.interstitialReady(), true, 'the next ad was loaded meanwhile');
+
+    admob.dismiss(kind); // the player closes it at last: the plugin deletes the ad loaded since
+    await settle();
+    assert.equal(admob.preparedCount(kind), 1, 'the bridge noticed and loaded another');
+    assert.equal(kind === 'rewarded' ? ads.rewardedReady() : ads.interstitialReady(), true);
+
+    const second = show(ads);
+    assert.equal(admob.presentations(kind), 2, 'which the plugin really presents');
+    admob.earnReward();
+    admob.dismiss(kind);
+    assert.equal(await second, true);
+  });
+
+  test(`${kind}: a load still under way when that old ad closes is kept, not repeated`, async () => {
+    const { ads, admob, clock } = await started({ admob: { loads: 'manual' } });
+    const prepare = kind === 'rewarded' ? 'prepareRewardVideoAd' : 'prepareInterstitial';
+    admob.loadOk('interstitial');
+    admob.loadOk('rewarded');
+    await settle();
+
+    const first = show(ads);
+    await clock.advance(capOf(kind));
+    await first;
+    assert.equal(admob.count(prepare), 2, 'the next load started when the game was released');
+
+    admob.dismiss(kind); // deletes the OLD entry; the new ad is filed when its load completes
+    await settle();
+    assert.equal(admob.count(prepare), 2);
+    admob.loadOk(kind);
+    await settle();
+    assert.equal(admob.preparedCount(kind), 1);
+
+    const second = show(ads);
+    assert.equal(admob.presentations(kind), 2);
+    admob.earnReward();
+    admob.dismiss(kind);
+    assert.equal(await second, true);
+  });
+
+  test(`${kind}: an ad the previous page left on screen does not leave the new page with a dead ad`, async () => {
+    const before = await started();
+    show(before.ads); // on screen when iOS discards the web content process
+    before.admob.reloadPage();
+
+    const { ads, admob } = await started({ plugin: before.admob });
+    assert.equal(admob.adOnScreen(kind), true);
+    assert.equal(await show(ads), false, 'the plugin refuses a second ad on top of it');
+    await settle();
+
+    admob.dismiss(kind); // also deletes the ad this page has prepared since
+    await settle();
+    assert.equal(admob.preparedCount(kind), 1);
+
+    const shown = show(ads);
+    assert.equal(admob.presentations(kind), 2);
+    admob.earnReward();
+    admob.dismiss(kind);
+    assert.equal(await shown, true);
   });
 
   test(`${kind}: only one full-screen ad at a time`, async () => {
@@ -209,6 +283,36 @@ for (const [kind, show] of [
     assert.equal(await shown, true);
   });
 }
+
+test('rewarded: a long video is not released at the interstitial cap, and its reward still counts', async () => {
+  const { ads, admob, clock } = await started();
+  const shown = ads.showRewarded();
+  await clock.advance(T.maxShowMs + 60_000);
+  assert.equal(await peek(shown), 'pending');
+  admob.earnReward();
+  admob.dismiss('rewarded');
+  assert.equal(await shown, true);
+});
+
+test('a Loaded event while an ad is on screen does not make the slot ready', async () => {
+  const { ads, admob } = await started({ admob: { loads: 'manual' } });
+  admob.loadOk('interstitial');
+  admob.loadOk('rewarded');
+  await settle();
+
+  const shown = ads.showInterstitial();
+  // A load that was given up on long ago comes in now. The plugin files it under the ad
+  // unit, and deletes it again when the ad on screen is closed.
+  admob.emit(EVENTS.interstitialLoaded, { adUnitId: UNITS.interstitial });
+  assert.equal(ads.interstitialReady(), false);
+  assert.equal(await ads.showRewarded(), false, 'the interstitial is still up');
+  assert.equal(admob.count('showRewardVideoAd'), 0);
+
+  admob.dismiss('interstitial');
+  assert.equal(await shown, true);
+  assert.equal(ads.interstitialReady(), false);
+  assert.equal(admob.count('prepareInterstitial'), 2, 'the next ad is requested as after any showing');
+});
 
 test('time the app spent suspended does not count towards the on-screen cap', async () => {
   const { ads, admob, clock } = await started();

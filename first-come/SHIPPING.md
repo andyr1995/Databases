@@ -21,10 +21,10 @@ How far to trust this guide:
 
 ## Where things stand
 
-- **Nothing has been built on a Mac yet.** The Xcode project, both CI workflows and the
-  StoreKit test file were produced and checked on Linux, where Xcode does not exist. Expect
-  the first Mac build to need a fix or two. "What has not been verified" at the end lists
-  exactly what is unproven.
+- **The app compiles.** On 13 November 2026 the build workflow built it for the iPhone
+  simulator on a GitHub Mac runner (Xcode 26.6), unsigned, at the first attempt. It has not
+  yet been signed, uploaded or run on a device. "What has not been verified" at the end
+  lists exactly what is unproven.
 - **The app's identity is set but yours to change.** `app.config.json` calls the app
   `First Come` with the bundle id `app.firstcome.puzzle`. The bundle id cannot be changed
   after the first upload, so decide on it in step 3.
@@ -256,7 +256,11 @@ do this early, while waiting for Apple and Google to approve accounts.
 4. Try everything on the phone. None of this has been tried on a real device yet:
    - The game starts and the launch image gives way to the first screen.
    - iOS asks "Allow ... to track your activity" once, with your sentence in it.
-   - A demo banner appears at the bottom and does not cover any part of the game.
+   - A demo banner appears at the bottom and does not cover any part of the game. Going
+     back to the Home screen takes it away again, and opening a level brings it back.
+   - With a banner showing, load the page again (on a Mac: Safari > Develop > your iPhone >
+     the app, then Reload; or leave the app in the background until iOS has discarded it).
+     The banner of the old page must not be left lying over the new one.
    - A full-screen demo advert appears now and then between levels and the game carries on
      afterwards. A rewarded video gives its reward; closing it early gives nothing.
    - Remove Ads: the price appears, the purchase goes through (purchases in TestFlight builds
@@ -343,7 +347,8 @@ the purchase history.
 
 App Information > Age Rating. Apple works the rating out from the answers.
 
-- **Advertising** (under Capabilities): **Yes.** Per Apple's table this still gives 4+.
+- **Advertising** (under Capabilities): **Yes.** Per Apple's table this still gives 4+ in
+  Apple's own (global) rating.
 - **Unrestricted Web Access**: **No.** The in-app browser only opens the game's own privacy
   and support pages. (Answering Yes would make the app 16+.)
 - User-Generated Content, Social Media, Messaging and Chat: No.
@@ -352,7 +357,15 @@ App Information > Age Rating. Apple works the rating out from the answers.
   None / No. The Daily puzzle is not a contest in Apple's sense: players do not compete with
   each other for rankings or rewards.
 
-Expected result: **4+**. If App Store Connect shows something else, re-read the answers.
+Expected result: **4+** as the Apple age rating. If App Store Connect shows something else
+there, re-read the answers.
+
+A few countries show their own rating, worked out from the same answers, and one of them
+differs for this app: on Brazil's scale for self-rated apps, any app with advertising is
+**A12** (Apple's "Age ratings values and definitions" help page, read on 13 November 2026).
+Seeing A12 for Brazil is therefore expected and not a wrong answer. On the other regional
+scales described on that page (Australia, France, Korea, Vietnam) advertising did not lift
+an app above the lowest step when it was read.
 
 ### 15. Export compliance
 
@@ -541,14 +554,18 @@ valid YAML and their shell steps were exercised with stand-ins for Apple's tools
 
 Not checked, because it needs a Mac, an Apple account or a phone:
 
-- That Xcode opens the project, resolves the Swift packages and builds it. No build of any
-  kind has been made.
-- Both workflows on a real GitHub runner. The TestFlight workflow in particular: signing with
-  an API key, the upload, and whether a brand-new team needs a registered device.
+- The TestFlight workflow on a real GitHub runner: signing with an API key, the upload, and
+  whether a brand-new team needs a registered device. (The build workflow has run and passed:
+  Xcode 26.6 resolved the Swift packages and built the app for the simulator.)
 - That Xcode accepts `Products.storekit` and the shared scheme, and that the pretend purchase
   works in the simulator.
 - That App Store Connect accepts the build: the privacy manifest, the icon, the
   `Info.plist` keys.
 - Everything in the checklist of step 10: adverts, consent and tracking prompts, the purchase
   and restore, on a real iPhone.
+- Three things the bridge does because of how the AdMob plugin's Swift code reads. The tests
+  model that code; none of it has been watched on a device: taking down a banner that a
+  previous load of the page left on screen; sending banner calls to the plugin one at a
+  time so that a hide cannot overtake a show; and loading a fresh full-screen advert when an
+  old one is closed later than the game stopped waiting for it.
 - The app in an iPhone-sized window on an iPad.

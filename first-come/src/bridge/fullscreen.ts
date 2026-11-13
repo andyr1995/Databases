@@ -23,6 +23,12 @@
 //    - Dismissed     (adDidDismissFullScreenContent)
 //  after Dismissed or FailedToShow the plugin has thrown the ad object away: a new one
 //  must be prepared before the next show.
+//  prepared ads are filed under their AD UNIT ID (preparedAds[adUnitID]), and so is the
+//  note of which one is on screen. Dismissed / FailedToShow delete preparedAds[that id],
+//  whatever is filed there by then. An ad prepared for the same unit while the previous one
+//  is still on screen replaces the entry and is the one that gets deleted.
+//  all of this lives in the plugin instance, which outlives the web page: an ad the page
+//  put up is still up, and still closes with a Dismissed event, after the page was reloaded.
 
 import { attempt, backoffDelay, type Clock, type Logger } from './util.ts';
 
@@ -46,8 +52,13 @@ export interface FullscreenTuning {
   loadTimeoutMs: number;
   /** show(): how long to wait for the ad to report that it is on screen. */
   presentTimeoutMs: number;
-  /** show(): the longest an ad may stay on screen before the game is released anyway. */
+  /** show(): the longest an interstitial may stay on screen before the game is released anyway. */
   maxShowMs: number;
+  /**
+   * The same for a rewarded video. Much longer, because the release is final: a reward the
+   * player earns after it can no longer be passed to the game.
+   */
+  maxRewardedShowMs: number;
   /** Tick of the timer that measures both of the above. */
   heartbeatMs: number;
   /** A tick this late means the app was suspended meanwhile; only this much of the gap counts. */
@@ -64,6 +75,7 @@ export const DEFAULT_FULLSCREEN_TUNING: FullscreenTuning = {
   loadTimeoutMs: 75_000,
   presentTimeoutMs: 10_000,
   maxShowMs: 3 * 60_000,
+  maxRewardedShowMs: 10 * 60_000,
   heartbeatMs: 1_000,
   maxBeatGapMs: 3_000,
   rewardGraceMs: 400,
@@ -121,6 +133,7 @@ function isRewardItem(value: unknown): boolean {
 
 export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDriver, host: FullscreenHost): FullscreenSlot {
   const { clock, log, tuning } = host;
+  const maxOnScreenMs = kind === 'rewarded' ? tuning.maxRewardedShowMs : tuning.maxShowMs;
 
   let state: State = 'empty';
   let loadedAt = 0;
@@ -200,7 +213,7 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
    * followed the ad out to the App Store, or locked the phone) and all come due at once
    * afterwards, so a tick that arrives very late counts for maxBeatGapMs at most. Until
    * the ad reports that it is on screen the total is held against presentTimeoutMs, from
-   * then on (starting again from zero) against maxShowMs.
+   * then on (starting again from zero) against maxShowMs (maxRewardedShowMs for a video).
    */
   function watch(s: Session): void {
     s.lastBeatAt = clock.now();
@@ -211,7 +224,7 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
       s.runningMs += Math.min(Math.max(now - s.lastBeatAt, 0), tuning.maxBeatGapMs);
       s.lastBeatAt = now;
       if (!s.displayed && s.runningMs >= tuning.presentTimeoutMs) s.finish('the ad never appeared');
-      else if (s.displayed && s.runningMs >= tuning.maxShowMs) s.finish('no dismissal reported');
+      else if (s.displayed && s.runningMs >= maxOnScreenMs) s.finish('no dismissal reported');
       else s.beatTimer = clock.setTimeout(beat, tuning.heartbeatMs);
     };
     s.beatTimer = clock.setTimeout(beat, tuning.heartbeatMs);
@@ -233,8 +246,10 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
    *                                                         rewarded: whether Rewarded was seen)
    *   5. no Showed event within presentTimeoutMs         -> finish (false). Covers the native
    *      path that never answers (no root view controller) and a lost event.
-   *   6. Showed, but no Dismissed after maxShowMs of running time -> finish. Covers a lost
-   *      Dismissed event.
+   *   6. Showed, but no Dismissed after maxShowMs (rewarded: maxRewardedShowMs) of running
+   *      time -> finish. Covers a lost Dismissed event. If the ad is in fact still up, its
+   *      late Dismissed is handled by strayEnd() below; a reward earned after this point is
+   *      lost, which is why the limit for a video is the longer one.
    *
    * 5 and 6 are the watchdog above: one timer owned by this module, started synchronously
    * before the plugin is called. Each tick either ends the showing or schedules the next
@@ -308,7 +323,11 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
       return;
     }
     const s = session;
-    if (!s || s.done) return; // an event for a showing that is already over
+    if (!s || s.done) {
+      // An event for a showing that is already over, or that this page never started.
+      if (event === 'dismissed' || event === 'failedToShow') strayEnd();
+      return;
+    }
     switch (event) {
       case 'showed':
         if (!s.displayed) {
@@ -341,6 +360,25 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
         }
         break;
     }
+  }
+
+  /**
+   * An ad of this kind closed (or failed to open) while no showing is live here. That is an
+   * ad this slot had stopped waiting for: one the watchdog released while it was in fact
+   * still up, or one that a previous page of the app put up before the web view reloaded.
+   *
+   * With that event the plugin has deleted whatever was prepared for this ad unit (see the
+   * notes at the top of this file), and that is the ad loaded since, the one `ready` stands
+   * for. Showing it would be refused, so fetch another.
+   *
+   * A load still under way is left alone: the plugin files that ad when the load completes,
+   * after the deletion, and the Loaded event for it has not been sent yet.
+   */
+  function strayEnd(): void {
+    if (state !== 'ready') return;
+    log(`${kind}: an ad closed that was no longer being waited for; loading a new one`);
+    state = 'empty';
+    load();
   }
 
   function onActive(): void {

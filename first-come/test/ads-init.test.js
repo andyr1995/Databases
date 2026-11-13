@@ -24,6 +24,22 @@ const CONSENT_NEEDED = {
   privacyOptionsRequirementStatus: 'REQUIRED',
 };
 
+/** The twelve events the bridge listens for. */
+const LISTENED = [
+  EVENTS.bannerSize,
+  EVENTS.bannerLoaded,
+  EVENTS.bannerFailed,
+  EVENTS.interstitialLoaded,
+  EVENTS.interstitialShowed,
+  EVENTS.interstitialFailedToShow,
+  EVENTS.interstitialDismissed,
+  EVENTS.rewardedLoaded,
+  EVENTS.rewardedShowed,
+  EVENTS.rewardedFailedToShow,
+  EVENTS.rewardedDismissed,
+  EVENTS.rewardedReward,
+];
+
 function setup(options = {}) {
   const clock = createFakeClock();
   const admob = createFakeAdMob(options.admob);
@@ -41,30 +57,17 @@ function setup(options = {}) {
   return { clock, admob, app, store, ads };
 }
 
-test('order: listeners, consent info, consent form, tracking prompt, initialize, preload', async () => {
+test('order: leftover banner, listeners, consent info, consent form, tracking prompt, initialize, preload', async () => {
   const { ads, admob } = setup({ admob: { consent: CONSENT_NEEDED, tracking: 'notDetermined' } });
   assert.equal(await ads.init(), undefined);
 
-  const firstRealCall = admob.calls.findIndex((c) => c.name !== 'addListener');
-  assert.ok(firstRealCall >= 12, 'every listener is registered before anything is requested');
-  for (const event of [
-    EVENTS.bannerSize,
-    EVENTS.bannerLoaded,
-    EVENTS.bannerFailed,
-    EVENTS.interstitialLoaded,
-    EVENTS.interstitialShowed,
-    EVENTS.interstitialFailedToShow,
-    EVENTS.interstitialDismissed,
-    EVENTS.rewardedLoaded,
-    EVENTS.rewardedShowed,
-    EVENTS.rewardedFailedToShow,
-    EVENTS.rewardedDismissed,
-    EVENTS.rewardedReward,
-  ]) {
-    assert.equal(admob.listenerCount(event), 1, event);
-  }
+  // removeBanner (see the next test) requests nothing; everything after it does.
+  const firstRequest = admob.calls.findIndex((c) => c.name !== 'addListener' && c.name !== 'removeBanner');
+  assert.equal(firstRequest, 13, 'every listener is registered before anything is requested');
+  for (const event of LISTENED) assert.equal(admob.listenerCount(event), 1, event);
 
   assert.deepEqual(admob.sequence(), [
+    'removeBanner',
     'requestConsentInfo',
     'showConsentForm',
     'trackingAuthorizationStatus',
@@ -79,10 +82,23 @@ test('order: listeners, consent info, consent form, tracking prompt, initialize,
   assert.equal(admob.last('prepareInterstitial').opts.npa, false);
 });
 
+test('the first thing init() does is take down a banner left by an earlier page; once, and before the SDK starts', async () => {
+  const { ads, admob, clock } = setup({ admob: { consent: new Error('offline') } });
+  await ads.init();
+  assert.equal(admob.calls[0].name, 'removeBanner', 'before the listeners, so a leftover is not looked at for long');
+  assert.equal(admob.native.initialized, false, 'on a cold start the plugin resolves it without doing anything');
+
+  admob.consent = CONSENT_OK;
+  await clock.advance(DEFAULT_ADS_TUNING.startRetryBaseMs); // the start-up is tried again
+  assert.equal(admob.count('initialize'), 1);
+  assert.equal(admob.count('removeBanner'), 1, 'not repeated: by now a banner on screen would be our own');
+});
+
 test('no form when consent is not required; no prompt when tracking is already decided', async () => {
   const { ads, admob } = setup({ admob: { consent: CONSENT_OK, tracking: 'denied' } });
   await ads.init();
   assert.deepEqual(admob.sequence(), [
+    'removeBanner',
     'requestConsentInfo',
     'trackingAuthorizationStatus',
     'initialize',
@@ -95,7 +111,16 @@ test('no form when consent is not required; no prompt when tracking is already d
 test('no form when consent is required but no form is available', async () => {
   const { ads, admob } = setup({ admob: { consent: { ...CONSENT_NEEDED, isConsentFormAvailable: false } } });
   await ads.init();
-  assert.deepEqual(admob.sequence(), ['requestConsentInfo']);
+  assert.deepEqual(admob.sequence(), ['removeBanner', 'requestConsentInfo']);
+});
+
+test('no form when consent was already obtained, although a form is available', async () => {
+  const obtained = { status: 'OBTAINED', isConsentFormAvailable: true, canRequestAds: true, privacyOptionsRequirementStatus: 'REQUIRED' };
+  const { ads, admob } = setup({ admob: { consent: obtained } });
+  await ads.init();
+  assert.equal(admob.count('showConsentForm'), 0, 'the form is for players who have not answered yet');
+  assert.equal(admob.count('initialize'), 1);
+  assert.equal(ads.privacyOptionsRequired(), true);
 });
 
 test('when ads may not be requested: no tracking prompt, no SDK start, nothing loaded', async () => {
@@ -107,7 +132,7 @@ test('when ads may not be requested: no tracking prompt, no SDK start, nothing l
     },
   });
   await ads.init();
-  assert.deepEqual(admob.sequence(), ['requestConsentInfo', 'showConsentForm']);
+  assert.deepEqual(admob.sequence(), ['removeBanner', 'requestConsentInfo', 'showConsentForm']);
   assert.equal(ads.enabled(), true);
   assert.equal(ads.interstitialReady(), false);
   assert.equal(ads.rewardedReady(), false);
@@ -115,6 +140,7 @@ test('when ads may not be requested: no tracking prompt, no SDK start, nothing l
   assert.equal(await ads.showRewarded(), false);
 
   await ads.showBanner();
+  await settle();
   assert.equal(admob.count('showBanner'), 0, 'no banner request either');
 });
 
@@ -127,6 +153,7 @@ test('init() is idempotent', async () => {
   assert.equal(admob.count('requestConsentInfo'), 1);
   assert.equal(admob.count('initialize'), 1);
   assert.equal(admob.count('prepareInterstitial'), 1);
+  assert.equal(admob.count('removeBanner'), 1);
   assert.equal(admob.listenerCount(EVENTS.rewardedReward), 1);
 });
 
@@ -158,8 +185,31 @@ test('listeners that cannot be registered keep ads off', async () => {
   const { ads, admob } = setup();
   admob.listenersFail = true;
   await ads.init();
-  assert.deepEqual(admob.sequence(), [], 'nothing is requested without listeners');
+  assert.deepEqual(admob.sequence(), ['removeBanner'], 'nothing is requested without listeners');
   assert.equal(ads.interstitialReady(), false);
+});
+
+test('a start-up that is tried again does not register the listeners a second time', async () => {
+  const { ads, admob, app } = setup({ admob: { consent: new Error('offline') } });
+  await ads.init(); // listeners registered, then stopped at the consent lookup
+  assert.equal(admob.count('addListener'), LISTENED.length);
+
+  admob.consent = CONSENT_OK;
+  app.fire(true); // second pass, this time all the way
+  await settle();
+  assert.equal(ads.interstitialReady(), true);
+  assert.equal(admob.count('addListener'), LISTENED.length);
+  for (const event of LISTENED) assert.equal(admob.listenerCount(event), 1, event);
+});
+
+test('listeners that failed to register are registered on the next pass', async () => {
+  const { ads, admob, clock } = setup();
+  admob.listenersFail = true;
+  await ads.init();
+  admob.listenersFail = false;
+  await clock.advance(DEFAULT_ADS_TUNING.startRetryBaseMs);
+  for (const event of LISTENED) assert.equal(admob.listenerCount(event), 1, event);
+  assert.equal(ads.interstitialReady(), true);
 });
 
 test('a failing tracking step does not stop the start-up', async () => {
@@ -186,13 +236,14 @@ test('a failing initialize keeps ads off and is retried later', async () => {
 test('consent lookup fails, nothing remembered: no ads, retried when the app becomes active', async () => {
   const { ads, admob, app, store } = setup({ admob: { consent: new Error('Request consent info failed') } });
   await ads.init();
-  assert.deepEqual(admob.sequence(), ['requestConsentInfo']);
+  assert.deepEqual(admob.sequence(), ['removeBanner', 'requestConsentInfo']);
   assert.equal(ads.rewardedReady(), false);
 
   admob.consent = CONSENT_OK; // back online
   app.fire(true);
   await settle();
   assert.deepEqual(admob.sequence(), [
+    'removeBanner',
     'requestConsentInfo',
     'requestConsentInfo',
     'trackingAuthorizationStatus',
@@ -260,7 +311,7 @@ test('a consent lookup that never answers does not hang init()', async () => {
 test('a consent form that cannot be shown leaves ads off', async () => {
   const { ads, admob } = setup({ admob: { consent: CONSENT_NEEDED, consentForm: new Error('Consent Form not available') } });
   await ads.init();
-  assert.deepEqual(admob.sequence(), ['requestConsentInfo', 'showConsentForm']);
+  assert.deepEqual(admob.sequence(), ['removeBanner', 'requestConsentInfo', 'showConsentForm']);
   assert.equal(ads.privacyOptionsRequired(), true);
 });
 
@@ -305,9 +356,11 @@ test('consent withdrawn in the privacy options: ads stop, the banner comes down'
 
   admob.consent = { ...admob.consent, canRequestAds: false };
   await ads.showPrivacyOptions();
+  await settle();
   assert.equal(ads.interstitialReady(), false);
   assert.equal(ads.rewardedReady(), false);
   assert.equal(admob.count('hideBanner'), 1);
+  assert.equal(admob.bannerOnScreen(), false);
   assert.deepEqual(heights, [60, 0]);
 });
 

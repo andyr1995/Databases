@@ -20,7 +20,7 @@ const appConfig = JSON.parse(readFileSync(path.join(root, 'app.config.json'), 'u
 test('app.config.json has every field the build needs', () => {
   assert.match(appConfig.appId, /^[A-Za-z][A-Za-z0-9-]*(\.[A-Za-z][A-Za-z0-9-]*)+$/);
   assert.equal(typeof appConfig.appName, 'string');
-  assert.match(appConfig.version, /^\d+\.\d+\.\d+$/);
+  assert.match(appConfig.version, /^\d+(\.\d+){0,2}$/, 'the rule scripts/configure-ios.mjs applies');
   assert.ok(Number.isInteger(appConfig.build) && appConfig.build >= 1);
   assert.equal(typeof appConfig.webDir, 'string');
   assert.equal(typeof appConfig.admob.testing, 'boolean');
@@ -32,7 +32,10 @@ test('app.config.json has every field the build needs', () => {
   assert.ok(appConfig.trackingUsageDescription.length > 20, 'iOS shows this sentence in the tracking prompt');
 });
 
-test('while testing is on, the configured ids are Google\'s iOS demo ids', () => {
+// What app.config.json holds while testing is on is deliberately NOT checked: the shipping
+// guide has the real AdMob ids pasted in first and "testing" switched off last. That a
+// testing build cannot request a real ad unit is the next test's job.
+test('the demo ids the bridge falls back to are Google\'s iOS demo ids', () => {
   // Values from https://developers.google.com/admob/ios/test-ads and .../ios/quick-start
   assert.deepEqual(GOOGLE_IOS_DEMO_UNITS, {
     banner: 'ca-app-pub-3940256099942544/2435281174', // Anchored Adaptive Banner
@@ -40,10 +43,6 @@ test('while testing is on, the configured ids are Google\'s iOS demo ids', () =>
     rewarded: 'ca-app-pub-3940256099942544/1712485313',
   });
   assert.equal(GOOGLE_IOS_SAMPLE_APP_ID, 'ca-app-pub-3940256099942544~1458002511');
-  if (!appConfig.admob.testing) return;
-  const { appId, ...units } = appConfig.admob.ios;
-  assert.equal(appId, GOOGLE_IOS_SAMPLE_APP_ID);
-  assert.deepEqual(units, GOOGLE_IOS_DEMO_UNITS);
 });
 
 test('resolveAdUnits: testing never lets a real ad unit through', () => {
@@ -105,6 +104,9 @@ test('capacitor.config.ts: full-bleed web view, launch screen with a native fall
 });
 
 test('the web folder is named in exactly one place', () => {
+  // Scripts, tests, package.json (its "scripts" and its description too), workflows and the
+  // documentation all take the location of the web app from app.config.json, so that moving
+  // the folder is a one-line change. Only installed and generated files are skipped.
   const needle = appConfig.webDir;
   const skip = new Set(['node_modules', 'ios', 'android', '.git', 'package-lock.json']);
   const hits = [];
@@ -113,11 +115,16 @@ test('the web folder is named in exactly one place', () => {
       if (skip.has(name)) continue;
       const full = path.join(dir, name);
       if (statSync(full).isDirectory()) walk(full);
-      else if (readFileSync(full, 'utf8').includes(needle)) hits.push(path.relative(root, full));
+      else if (readFileSync(full, 'utf8').includes(needle)) hits.push(path.relative(root, full).split(path.sep).join('/'));
     }
   };
   walk(root);
-  assert.deepEqual(hits, ['app.config.json']);
+  assert.deepEqual(
+    hits.sort(),
+    ['app.config.json'],
+    `"${needle}" must appear only in app.config.json ("webDir"). Code in the other files listed should read it from ` +
+      'there, as scripts/build-bridge.mjs does; documentation should say "the web folder" or name it from the top of the repository.',
+  );
 });
 
 test('package.json: dependencies on the Capacitor 8 line, the four required scripts', () => {

@@ -3,6 +3,11 @@
 // Most tests run the script on a fresh copy of Capacitor's own iOS template (the archive the
 // CLI unpacks for `cap add ios`) in a temporary folder, so they prove the whole path from a
 // newly added platform. Nothing here needs a Mac.
+//
+// Those tests use the made-up configuration below, never the real app.config.json: the
+// real file is edited for every release (name, bundle id, version, build, team, AdMob ids)
+// and none of those edits may turn a test red. Only the first test reads the real file,
+// to check that the committed project is in step with it.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -18,14 +23,33 @@ import { extractIdentifiers, GOOGLE_ID } from '../scripts/update-skadnetwork.mjs
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const template = path.join(root, 'node_modules', '@capacitor', 'cli', 'assets', 'ios-spm-template.tar.gz');
-const realConfig = JSON.parse(readFileSync(path.join(root, 'app.config.json'), 'utf8'));
 const skAdNetwork = JSON.parse(readFileSync(path.join(root, 'resources', 'skadnetwork-ids.json'), 'utf8'));
+
+/** A complete, valid app.config.json that no real app will ever have. */
+const FIXTURE = Object.freeze({
+  appId: 'com.example.fixture',
+  appName: 'Fixture App',
+  version: '1.0.0',
+  build: 1,
+  webDir: '../fixture-web',
+  admob: {
+    testing: true,
+    ios: {
+      appId: 'ca-app-pub-3940256099942544~1458002511',
+      banner: 'ca-app-pub-3940256099942544/2435281174',
+      interstitial: 'ca-app-pub-3940256099942544/4411468910',
+      rewarded: 'ca-app-pub-3940256099942544/1712485313',
+    },
+  },
+  iap: { removeAdsProductId: 'fixture_remove_ads' },
+  trackingUsageDescription: 'Fixture sentence for the tracking prompt, long enough to be one.',
+});
 
 const scratch = mkdtempSync(path.join(os.tmpdir(), 'configure-ios-test-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 let counter = 0;
 
-/** A temporary app folder: Capacitor's untouched iOS template, the real resources/, and a config. */
+/** A temporary app folder: Capacitor's untouched iOS template, the real resources/, and the fixture config. */
 function freshApp(configOverrides = {}) {
   counter += 1;
   const dir = path.join(scratch, `app-${counter}`);
@@ -37,7 +61,7 @@ function freshApp(configOverrides = {}) {
 }
 
 function writeConfig(dir, overrides) {
-  writeFileSync(path.join(dir, 'app.config.json'), JSON.stringify({ ...realConfig, ...overrides }, null, 2));
+  writeFileSync(path.join(dir, 'app.config.json'), JSON.stringify({ ...FIXTURE, ...overrides }, null, 2));
 }
 
 const pbxprojOf = (dir) => path.join(dir, 'ios', 'App', 'App.xcodeproj', 'project.pbxproj');
@@ -113,8 +137,8 @@ test('a fresh template gets every setting from app.config.json', () => {
   assert.equal(info.CFBundleDisplayName, 'First & Last <Come>');
   assert.equal(info.CFBundleShortVersionString, '$(MARKETING_VERSION)');
   assert.equal(info.CFBundleVersion, '$(CURRENT_PROJECT_VERSION)');
-  assert.equal(info.GADApplicationIdentifier, realConfig.admob.ios.appId);
-  assert.equal(info.NSUserTrackingUsageDescription, realConfig.trackingUsageDescription);
+  assert.equal(info.GADApplicationIdentifier, FIXTURE.admob.ios.appId);
+  assert.equal(info.NSUserTrackingUsageDescription, FIXTURE.trackingUsageDescription);
   assert.equal(info.ITSAppUsesNonExemptEncryption, false);
   assert.deepEqual(info.UISupportedInterfaceOrientations, ['UIInterfaceOrientationPortrait']);
   assert.equal(info['UISupportedInterfaceOrientations~ipad'], undefined);
@@ -176,8 +200,8 @@ test('the project file only gains what was asked for', () => {
   ]);
   const settingLines = [...new Set(added.filter((line) => /^[A-Z_]+ = /.test(line)))].sort();
   assert.deepEqual(settingLines, [
-    `MARKETING_VERSION = ${realConfig.version};`,
-    `PRODUCT_BUNDLE_IDENTIFIER = ${realConfig.appId};`,
+    `MARKETING_VERSION = ${FIXTURE.version};`,
+    `PRODUCT_BUNDLE_IDENTIFIER = ${FIXTURE.appId};`,
     'TARGETED_DEVICE_FAMILY = 1;',
   ]);
   const others = added.filter((line) => !/^[A-Z_]+ = /.test(line));
@@ -280,13 +304,12 @@ test('an icon the App Store would reject stops the run before anything is writte
 test('editing app.config.json and running again updates the project; nothing else moves', () => {
   const dir = freshApp();
   configureIos({ root: dir });
-  // A name and id that no real app.config.json will hold, so the edit is always a change.
-  writeConfig(dir, { appName: 'Renamed Game', appId: 'com.example.renamed', version: '1.2.0', build: 9 });
+  writeConfig(dir, { appName: 'First Come', appId: 'com.example.firstcome', version: '1.2.0', build: 9 });
   const result = configureIos({ root: dir });
   assert.deepEqual(result.changed.sort(), ['ios/App/App.xcodeproj/project.pbxproj', 'ios/App/App/Info.plist']);
-  assert.equal(readInfo(dir).CFBundleDisplayName, 'Renamed Game');
+  assert.equal(readInfo(dir).CFBundleDisplayName, 'First Come');
   for (const buildSettings of targetSettings(dir)) {
-    assert.equal(buildSettings.PRODUCT_BUNDLE_IDENTIFIER, 'com.example.renamed');
+    assert.equal(buildSettings.PRODUCT_BUNDLE_IDENTIFIER, 'com.example.firstcome');
     assert.equal(buildSettings.MARKETING_VERSION, '1.2.0');
     assert.equal(buildSettings.CURRENT_PROJECT_VERSION, 9);
   }
@@ -371,7 +394,7 @@ test('mistakes in app.config.json are all listed, in plain words', () => {
     appId: 'not a bundle id',
     version: 'one',
     build: 0,
-    admob: { testing: true, ios: { ...realConfig.admob.ios, appId: 'ca-app-pub-3940256099942544/1458002511' } },
+    admob: { testing: true, ios: { ...FIXTURE.admob.ios, appId: 'ca-app-pub-3940256099942544/1458002511' } },
   });
   assert.throws(
     () => configureIos({ root: dir }),

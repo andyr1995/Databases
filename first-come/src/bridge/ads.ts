@@ -129,6 +129,7 @@ export function createAdsProvider(deps: AdsDeps): AdProvider {
     banner: { ...DEFAULT_ADS_TUNING.banner, ...deps.tuning?.banner },
   };
 
+  let leftoverBannerCleared = false;
   let listenersRegistered = false;
   let sdkStarted = false;
   let adsAllowed = false;
@@ -307,6 +308,15 @@ export function createAdsProvider(deps: AdsDeps): AdProvider {
 
   /** One pass through the start-up. Returns true when ads are running. */
   async function start(): Promise<boolean> {
+    if (!leftoverBannerCleared) {
+      // First thing on the first pass: the AdMob plugin and its banner view outlive the web
+      // page, so after the page was loaded again a banner of the page before may still be
+      // lying over the game. Nothing waits for this; the banner controller keeps its own
+      // calls in order behind it.
+      leftoverBannerCleared = true;
+      banner.clearLeftover();
+    }
+
     if (!listenersRegistered) {
       // Before anything is requested, so the first Loaded / SizeChanged cannot be missed.
       try {

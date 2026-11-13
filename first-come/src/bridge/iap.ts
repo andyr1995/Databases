@@ -34,6 +34,10 @@ export function createIapProvider(purchases: PurchasesLike, productId: string, o
   const lookupTimeoutMs = options.lookupTimeoutMs ?? 15_000;
   let buying: Promise<PurchaseResult> | null = null;
 
+  // false means "not among the current entitlements" AND "could not find out" (plugin error,
+  // timeout): the contract gives owned() no third answer, and nothing in the bridge rejects
+  // into the game. So the game may act on true, never on false. Taking Remove Ads away
+  // again after a refund needs a way to tell the two apart first.
   async function owned(): Promise<boolean> {
     if (!productId) return false;
     try {

@@ -84,8 +84,11 @@ async function boot() {
   platform.onActiveChange((isActive) => {
     active = isActive;
     syncAudio();
-    if (isActive) app.refresh();
-    else store.flush();
+    if (isActive) {
+      app.refresh();
+      // A purchase may have been approved while the app was away (Ask to Buy).
+      app.ads.checkEntitlement();
+    } else store.flush();
   });
   window.addEventListener('pagehide', () => store.flush());
   document.addEventListener('pointerdown', unlockAudio, true);

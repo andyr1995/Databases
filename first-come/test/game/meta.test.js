@@ -187,6 +187,8 @@ function fakeWorld({ enabled = true, rewardedReady = true, earn = true } = {}) {
   };
   let owned = false;
   const iap = { ...noIap, available: () => true, owned: async () => owned, purchase: async () => ((owned = true), 'purchased'), restore: async () => owned };
+  /** As if the App Store approved a purchase while the app was away. */
+  const approveLater = () => void (owned = true);
   const state = defaultState();
   const store = { state, save() {} };
   const events = [];
@@ -196,7 +198,7 @@ function fakeWorld({ enabled = true, rewardedReady = true, earn = true } = {}) {
     now: () => clock,
     hooks: { onOpen: () => events.push('open'), onClose: () => events.push('close'), onEntitlement: (o) => events.push(`owned:${o}`) },
   });
-  return { manager, state, shown, events, banner: () => bannerOn, tick: (s) => void (clock += s * 1000) };
+  return { manager, state, shown, events, approveLater, banner: () => bannerOn, tick: (s) => void (clock += s * 1000) };
 }
 
 test('the advert manager paces full-screen adverts through a session', async () => {
@@ -245,6 +247,24 @@ test('a rewarded video only pays out when earned, and buys a rest from full-scre
   assert.equal(web.manager.rewardMode(), 'free');
   assert.equal(await web.manager.watchRewarded(), true, 'with no advert system, rewards are simply given');
   assert.equal(await web.manager.interstitialIfDue(), false);
+});
+
+test('a purchase approved while the app was away is picked up when it comes back', async () => {
+  const w = fakeWorld();
+  await w.manager.init();
+  w.manager.setBanner(true);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(w.state.removeAds, false);
+  w.approveLater();
+  w.manager.checkEntitlement();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(w.state.removeAds, true);
+  assert.equal(w.banner(), false);
+  assert.deepEqual(w.events.filter((e) => e.startsWith('owned')), ['owned:true']);
+  // Asking again changes nothing and never takes the purchase away.
+  w.manager.checkEntitlement();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(w.state.removeAds, true);
 });
 
 test('buying Remove Ads turns off the banner and full-screen adverts for good', async () => {

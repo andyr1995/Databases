@@ -20,9 +20,23 @@
 //               If the ad has not loaded yet there is nothing to hide, and the banner still
 //               appears when the load completes.
 //  resumeBanner un-hides and emits bannerAdSizeChanged {w,h}; rejects if the view is gone.
-//  removeBanner removes the view. Emits nothing.
+//  removeBanner removes the view if it is on screen (hidden or not). Emits nothing and
+//               always resolves, also when there is no view.
 //  Before AdMob.initialize() the executors have no plugin reference, and showBanner /
 //  resumeBanner then never settle. The controller therefore does nothing until canLoad().
+//
+// Two more facts the controller is built around (AdMobPlugin.swift, and Capacitor's
+// WebViewDelegationHandler.swift / CAPBridgeViewController.swift):
+//
+//  Order.   Every banner call is passed to the main queue once, but hideBanner then passes
+//           itself on a second time before it acts. A hideBanner followed straight away by a
+//           resumeBanner can therefore be applied the other way round. The controller sends
+//           its calls one at a time, each after the previous one has answered (see send()).
+//  Reload.  The banner is a native subview of the web view, owned by the plugin instance.
+//           Both outlive the page: when the page is loaded again (iOS discarded the web
+//           content process in the background, or location.reload()) Capacitor only drops
+//           the listeners. A banner the previous page put up is then still on screen, over a
+//           page that knows nothing about it. clearLeftover() takes it down.
 
 import { attempt, backoffDelay, type Clock, type Logger } from './util.ts';
 
@@ -53,6 +67,8 @@ export interface BannerTuning {
   loadTimeoutMs: number;
   /** Wait this long after a width change (rotation) before rebuilding the banner. */
   relayoutDelayMs: number;
+  /** A plugin call waits at most this long for the call before it to answer. */
+  callWaitMs: number;
 }
 
 export const DEFAULT_BANNER_TUNING: BannerTuning = {
@@ -60,6 +76,7 @@ export const DEFAULT_BANNER_TUNING: BannerTuning = {
   retryCapMs: 5 * 60_000,
   loadTimeoutMs: 45_000,
   relayoutDelayMs: 300,
+  callWaitMs: 5_000,
 };
 
 export interface BannerHost {
@@ -86,6 +103,11 @@ export interface BannerController {
   refresh(): void;
   /** The app came back to the foreground. */
   onActive(): void;
+  /**
+   * Take down a banner that an earlier page of this app left on screen (see "Reload" at
+   * the top of this file). Call once, before the first refresh().
+   */
+  clearLeftover(): void;
 }
 
 /**
@@ -148,6 +170,43 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
     }
   }
 
+  /** Settles when the plugin call sent last has answered; null while none is under way. */
+  let lastCall: Promise<void> | null = null;
+
+  /**
+   * Make a plugin call once the call before it has answered, so that the plugin applies
+   * them in the order they were made (see "Order" at the top of this file). With no call
+   * under way the plugin is called at once.
+   *
+   * No call waits for ever: showBanner and resumeBanner never answer when the plugin finds
+   * no root view controller. After callWaitMs the next call goes out regardless.
+   */
+  function send(call: () => Promise<unknown>): Promise<unknown> {
+    const previous = lastCall;
+    let answered: () => void = () => {};
+    const mine = new Promise<void>((resolve) => {
+      answered = resolve;
+    });
+    lastCall = mine;
+    const start = (): Promise<unknown> => {
+      const result = attempt(call);
+      const done = (): void => {
+        answered();
+        if (lastCall === mine) lastCall = null;
+      };
+      result.then(done, done);
+      return result;
+    };
+    if (!previous) return start();
+    return new Promise<void>((go) => {
+      const timer = clock.setTimeout(go, tuning.callWaitMs);
+      void previous.then(() => {
+        clock.clearTimeout(timer);
+        go();
+      });
+    }).then(start);
+  }
+
   function watchLoad(id: number): void {
     loadTimer = cancel(loadTimer);
     loadTimer = clock.setTimeout(() => {
@@ -164,7 +223,7 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
     const id = ++requestId;
     watchLoad(id);
     // The call resolves as soon as the request is under way; success and failure arrive as events.
-    attempt(() => driver.create()).catch((error) => {
+    send(() => driver.create()).catch((error) => {
       if (id === requestId && phase === 'pending') failed(error);
     });
   }
@@ -173,7 +232,7 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
     phase = 'pending';
     const id = ++requestId;
     watchLoad(id);
-    attempt(() => driver.resume()).then(
+    send(() => driver.resume()).then(
       () => {
         // The size event normally got here first; this covers its absence.
         if (id === requestId && phase === 'pending') appeared();
@@ -191,7 +250,7 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
 
   function hide(): void {
     phase = 'hidden';
-    attempt(() => driver.hide()).catch((error) => log('hideBanner failed', error));
+    send(() => driver.hide()).catch((error) => log('hideBanner failed', error));
   }
 
   /** Bring the native banner in line with what the game wants. */
@@ -248,7 +307,7 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
       if (measure(() => viewport.width()) === builtForWidth) return;
       // An adaptive banner is sized once, for the width at creation. After a rotation (or an
       // iPad split-view resize) it is the wrong size: replace it.
-      attempt(() => driver.remove()).catch((error) => log('removeBanner failed', error));
+      send(() => driver.remove()).catch((error) => log('removeBanner failed', error));
       phase = 'none';
       nativeHeight = 0;
       apply();
@@ -288,6 +347,8 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
       } else {
         // {0,0} follows our own hideBanner, or precedes bannerAdFailedToLoad. Both are handled
         // where they originate, so this never changes state; it only re-checks the height.
+        // (It cannot belong to a hide that the plugin applied after a later resume: send()
+        // keeps the calls in order.)
         emit();
       }
     },
@@ -305,6 +366,14 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
         retryTimer = cancel(retryTimer);
         apply();
       }
+    },
+    clearLeftover() {
+      // Nothing has been asked of the plugin yet, so any banner view it holds is not ours.
+      // On a cold start there is none and the plugin resolves without doing anything. A
+      // leftover that was still loading is not found by removeBanner; if it turns up later,
+      // appeared() adopts it and hides it unless the game wants a banner by then.
+      if (phase !== 'none') return;
+      send(() => driver.remove()).catch((error) => log('removeBanner failed', error));
     },
   };
 }

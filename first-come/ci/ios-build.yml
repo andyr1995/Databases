@@ -17,7 +17,7 @@
 # (the "paths" filter) before it has looked inside any file. Everything after the first step
 # takes the web folder from app.config.json.
 #
-# NOT YET RUN: this workflow was written on Linux and has never executed on a macOS runner.
+# First run: 13 November 2026 on macos-latest with Xcode 26.6. It passed.
 
 name: iOS build
 

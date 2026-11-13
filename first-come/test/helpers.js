@@ -1,11 +1,32 @@
 // Test doubles for the plugins, and a clock the tests can wind forward.
 //
-// The fake AdMob plugin behaves the way the Swift source of @capacitor-community/admob 8.3.0
-// does (see the notes at the top of src/bridge/fullscreen.ts and banner.ts):
-//   - prepare*  : emits Loaded then resolves, or emits FailedToLoad then rejects
-//   - showInterstitial : resolves as soon as the ad is presented; dismissal is an event
-//   - showRewardVideoAd: resolves only when the reward is earned, otherwise stays pending
-//   - showBanner: resolves at once; the banner arrives later as SizeChanged + Loaded events
+// The fake AdMob plugin keeps the state the Swift source of @capacitor-community/admob 8.3.0
+// keeps, and answers from it (see the notes at the top of src/bridge/fullscreen.ts and
+// banner.ts). That state belongs to the plugin instance, which outlives the web page:
+// reloadPage() drops the listeners and the calls in flight, as Capacitor does, and keeps
+// everything else.
+//
+//   AdInterstitialExecutor / AdRewardExecutor
+//     - preparedAds, keyed by AD UNIT ID, and currentlyShowingAdId
+//     - prepare*  : stores the ad under its unit id, emits Loaded, resolves; or emits
+//                   FailedToLoad and rejects
+//     - showInterstitial : rejects when nothing is prepared or an ad is already up; else
+//                   resolves as soon as the ad is presented. Dismissal is an event.
+//     - showRewardVideoAd: same rejections; resolves only when the reward is earned,
+//                   otherwise stays pending
+//     - Dismissed / FailedToShow delete preparedAds[the unit that was showing], which by then
+//                   may hold a NEWER ad than the one that was on screen
+//   BannerExecutor
+//     - showBanner: resolves at once; the view is added to the screen when the ad loads
+//                   (bannerArrives: SizeChanged + Loaded)
+//     - hideBanner takes TWO hops to the main queue before it acts; every other banner call
+//                   takes one. resumeBanner rejects when no view is on screen.
+//     - removeBanner only finds a view that is on screen, and always resolves
+//     - before initialize() the executors have no plugin reference: showBanner and
+//                   resumeBanner never answer, removeBanner resolves without doing anything
+//
+// Full-screen calls act at once here (in the plugin they take one hop each, so their order
+// is never in question); only the banner's hops are modelled, because there the order is.
 
 /** Let every promise callback that is already queued run. */
 export const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -20,18 +41,22 @@ export function deferred() {
   return { promise, resolve, reject };
 }
 
-/** Resolves 'pending' if `promise` has not settled yet, else { value } or { error }. */
+/**
+ * 'pending' if `promise` has not settled by the time everything already queued has run,
+ * else { value } or { error }.
+ */
 export async function peek(promise) {
-  const pending = Symbol('pending');
+  let state = 'pending';
+  promise.then(
+    (value) => {
+      state = { value };
+    },
+    (error) => {
+      state = { error };
+    },
+  );
   await settle();
-  const result = await Promise.race([
-    promise.then(
-      (value) => ({ value }),
-      (error) => ({ error }),
-    ),
-    Promise.resolve(pending),
-  ]);
-  return result === pending ? 'pending' : result;
+  return state;
 }
 
 export function createFakeClock(start = 1_000_000) {
@@ -123,13 +148,89 @@ export const CONSENT_OK = {
  * @param {'auto' | 'manual'} [options.loads]              'auto': every prepare succeeds at once
  * @param {'present' | 'fail' | 'reject' | 'silent'} [options.showMode]
  *        present: the ad appears (Showed).  fail: present() was called but the SDK reports
- *        FailedToShow.  reject: the plugin rejects the call.  silent: no answer, no events.
+ *        FailedToShow.  reject: the plugin rejects the call whatever is prepared.  silent: the
+ *        plugin finds no root view controller and does nothing: no answer, no events.
  */
 export function createFakeAdMob(options = {}) {
   const listeners = new Map();
   const calls = [];
   const pendingLoads = { interstitial: [], rewarded: [] };
   let rewardedShow = null;
+  /** Counts the web pages this plugin instance has served; see reloadPage(). */
+  let page = 1;
+
+  const executor = () => ({ prepared: new Map(), lastPreparedAdId: null, showingAdId: null, presentations: 0, loaded: 0 });
+  /** What the Swift side holds. It belongs to the plugin instance and survives reloadPage(). */
+  const native = {
+    /** AdMob.initialize() has run, so the executors have their plugin reference. */
+    initialized: false,
+    /** BannerExecutor's view: null, or { height, onScreen, hidden }. */
+    banner: null,
+    interstitial: executor(),
+    rewarded: executor(),
+  };
+
+  // DispatchQueue.main: blocks run one at a time in the order they were queued, each later
+  // than the code that queued it.
+  const mainQueue = [];
+  let draining = false;
+  function mainAsync(block) {
+    mainQueue.push(block);
+    if (draining) return;
+    draining = true;
+    queueMicrotask(function drain() {
+      const next = mainQueue.shift();
+      if (!next) {
+        draining = false;
+        return;
+      }
+      try {
+        next();
+      } finally {
+        queueMicrotask(drain);
+      }
+    });
+  }
+
+  /**
+   * A plugin call whose `body` runs after `hops` trips through the main queue. The answer
+   * only reaches the page that made the call: after a reload nobody is listening for it.
+   */
+  function onMain(hops, body) {
+    const from = page;
+    return new Promise((resolve, reject) => {
+      const answer = (settleWith) => (value) => {
+        if (from === page) settleWith(value);
+      };
+      const hop = (left) => mainAsync(() => (left > 1 ? hop(left - 1) : body(answer(resolve), answer(reject))));
+      hop(hops);
+    });
+  }
+
+  /** removeCurrentlyShowingAd() of both executors. */
+  function removeCurrentlyShowing(kind) {
+    const slot = native[kind];
+    const adId = slot.showingAdId;
+    if (adId === null) return;
+    slot.prepared.delete(adId); // whatever is stored under that unit id NOW
+    if (slot.lastPreparedAdId === adId) slot.lastPreparedAdId = [...slot.prepared.keys()].at(-1) ?? null;
+    slot.showingAdId = null;
+  }
+
+  /** The guards of show*() in the executors. Returns the call's answer when nothing is presented. */
+  function refusal(kind, opts) {
+    const notReady = kind === 'rewarded' ? 'Reward Video is Not Ready Yet' : "Ad wasn't ready";
+    if (fake.showMode === 'reject') return Promise.reject(new Error(notReady));
+    const slot = native[kind];
+    const adId = (opts && opts.adId) ?? slot.lastPreparedAdId;
+    if (!adId) return Promise.reject(new Error('No ad prepared'));
+    if (slot.showingAdId !== null) return Promise.reject(new Error('An ad is already showing'));
+    if (fake.showMode === 'silent') return new Promise(() => {});
+    if (!slot.prepared.has(adId)) return Promise.reject(new Error(notReady));
+    slot.showingAdId = adId;
+    slot.presentations++;
+    return null;
+  }
 
   const fake = {
     calls,
@@ -144,6 +245,7 @@ export function createFakeAdMob(options = {}) {
     showMode: options.showMode ?? 'present',
     listenersFail: false,
     initializeFails: false,
+    /** The banner view vanished without a word: resumeBanner finds nothing to un-hide. */
     resumeFails: false,
     bannerHeight: 60,
 
@@ -152,33 +254,72 @@ export function createFakeAdMob(options = {}) {
     },
     listenerCount: (event) => (listeners.get(event) ?? []).length,
 
+    // --- the native state, for assertions ------------------------------------------------
+    native,
+    /** A banner view is on screen and not hidden. */
+    bannerOnScreen: () => !!native.banner && native.banner.onScreen && !native.banner.hidden,
+    /** A full-screen ad of this kind is up. */
+    adOnScreen: (kind) => native[kind].showingAdId !== null,
+    /** How many ads the executor holds ready to show (0 or 1 with a single ad unit). */
+    preparedCount: (kind) => native[kind].prepared.size,
+    /** How many times an ad of this kind was really presented. */
+    presentations: (kind) => native[kind].presentations,
+
+    /**
+     * The web view loads the page again (location.reload(), or iOS killed the web content
+     * process). Capacitor forgets the listeners and the calls in flight; the plugin instance
+     * and everything it holds stay.
+     */
+    reloadPage() {
+      page++;
+      listeners.clear();
+      rewardedShow = null;
+    },
+
     // --- what the tests drive ---------------------------------------------------------
     loadOk(kind) {
       const load = pendingLoads[kind].shift();
       if (!load) throw new Error(`no ${kind} load is waiting`);
+      const slot = native[kind];
+      slot.prepared.set(load.adId, { serial: ++slot.loaded });
+      slot.lastPreparedAdId = load.adId;
       fake.emit(KIND[kind].loaded, { adUnitId: load.adId });
-      load.resolve({ adUnitId: load.adId });
+      if (load.page === page) load.resolve({ adUnitId: load.adId });
     },
     loadFail(kind, message = 'No fill') {
       const load = pendingLoads[kind].shift();
       if (!load) throw new Error(`no ${kind} load is waiting`);
       fake.emit(KIND[kind].failedToLoad, { code: 1, message });
-      load.reject(Object.assign(new Error(message), { code: '1' }));
+      if (load.page === page) load.reject(Object.assign(new Error(message), { code: '1' }));
     },
     waitingLoads: (kind) => pendingLoads[kind].length,
-    dismiss: (kind) => fake.emit(KIND[kind].dismissed),
-    failToShow: (kind) => fake.emit(KIND[kind].failedToShow, { code: 0, message: 'cannot present' }),
+    /** adDidDismissFullScreenContent */
+    dismiss(kind) {
+      removeCurrentlyShowing(kind);
+      fake.emit(KIND[kind].dismissed);
+    },
+    /** didFailToPresentFullScreenContentWithError */
+    failToShow(kind) {
+      removeCurrentlyShowing(kind);
+      fake.emit(KIND[kind].failedToShow, { code: 0, message: 'cannot present' });
+    },
     /** The SDK's userDidEarnReward handler: the event, and the show promise resolving. */
     earnReward({ event = true, result = true } = {}) {
       const reward = { type: 'coins', amount: 1 };
       if (event) fake.emit(EVENTS.rewardedReward, reward);
       if (result && rewardedShow) rewardedShow.resolve(reward);
     },
+    /** bannerViewDidReceiveAd (first load or a refresh): the view goes onto the screen. */
     bannerArrives(height = fake.bannerHeight) {
+      if (!native.banner) throw new Error('there is no banner view that could have loaded');
+      native.banner.onScreen = true;
+      native.banner.height = height;
       fake.emit(EVENTS.bannerSize, { width: 390, height });
       fake.emit(EVENTS.bannerLoaded);
     },
+    /** didFailToReceiveAdWithError: a view that is on screen is removed. */
     bannerFails() {
+      if (native.banner && native.banner.onScreen) native.banner = null;
       fake.emit(EVENTS.bannerSize, { width: 0, height: 0 });
       fake.emit(EVENTS.bannerFailed, { code: 0, message: 'No fill' });
     },
@@ -216,22 +357,50 @@ export function createFakeAdMob(options = {}) {
     async initialize(opts) {
       calls.push({ name: 'initialize', opts });
       if (fake.initializeFails) throw new Error('initialize failed');
+      native.initialized = true;
     },
 
-    async showBanner(opts) {
+    showBanner(opts) {
       calls.push({ name: 'showBanner', opts });
+      return onMain(1, (resolve) => {
+        if (!native.initialized) return; // no plugin reference: the call is never answered
+        // A view that is on screen is removed; one still loading is dropped with its reference.
+        native.banner = { height: 0, onScreen: false, hidden: false };
+        resolve();
+      });
     },
-    async hideBanner() {
+    hideBanner() {
       calls.push({ name: 'hideBanner' });
-      fake.emit(EVENTS.bannerSize, { width: 0, height: 0 });
+      return onMain(2, (resolve) => {
+        if (native.initialized) {
+          if (native.banner && native.banner.onScreen) native.banner.hidden = true;
+          fake.emit(EVENTS.bannerSize, { width: 0, height: 0 });
+        }
+        resolve();
+      });
     },
-    async resumeBanner() {
+    resumeBanner() {
       calls.push({ name: 'resumeBanner' });
-      if (fake.resumeFails) throw new Error('AdMob: not find subView for resumeBanner');
-      fake.emit(EVENTS.bannerSize, { width: 390, height: fake.bannerHeight });
+      return onMain(1, (resolve, reject) => {
+        if (!native.initialized) return;
+        if (fake.resumeFails) native.banner = null;
+        const view = native.banner;
+        if (!view || !view.onScreen) {
+          reject(new Error('AdMob: not find subView for resumeBanner'));
+          return;
+        }
+        view.hidden = false;
+        fake.emit(EVENTS.bannerSize, { width: 390, height: view.height });
+        resolve();
+      });
     },
-    async removeBanner() {
+    removeBanner() {
       calls.push({ name: 'removeBanner' });
+      return onMain(1, (resolve) => {
+        // Only a view that is on screen is found (hidden or not); one still loading stays.
+        if (native.initialized && native.banner && native.banner.onScreen) native.banner = null;
+        resolve();
+      });
     },
 
     prepareInterstitial: (opts) => prepare('interstitial', 'prepareInterstitial', opts),
@@ -239,25 +408,28 @@ export function createFakeAdMob(options = {}) {
 
     showInterstitial(opts) {
       calls.push({ name: 'showInterstitial', opts });
-      if (fake.showMode === 'reject') return Promise.reject(new Error("Ad wasn't ready"));
-      if (fake.showMode === 'silent') return new Promise(() => {});
+      const refused = refusal('interstitial', opts);
+      if (refused) return refused;
       // The plugin resolves right after calling present(); how that went arrives as an event.
-      fake.emit(fake.showMode === 'fail' ? EVENTS.interstitialFailedToShow : EVENTS.interstitialShowed);
+      if (fake.showMode === 'fail') fake.failToShow('interstitial');
+      else fake.emit(EVENTS.interstitialShowed);
       return Promise.resolve();
     },
     showRewardVideoAd(opts) {
       calls.push({ name: 'showRewardVideoAd', opts });
-      if (fake.showMode === 'reject') return Promise.reject(new Error('Reward Video is Not Ready Yet'));
-      rewardedShow = deferred();
-      if (fake.showMode === 'fail') fake.emit(EVENTS.rewardedFailedToShow);
-      else if (fake.showMode !== 'silent') fake.emit(EVENTS.rewardedShowed);
-      return rewardedShow.promise; // pending until the reward is earned, like the plugin
+      const refused = refusal('rewarded', opts);
+      if (refused) return refused;
+      const shown = deferred();
+      rewardedShow = shown;
+      if (fake.showMode === 'fail') fake.failToShow('rewarded');
+      else fake.emit(EVENTS.rewardedShowed);
+      return shown.promise; // pending until the reward is earned, like the plugin
     },
   };
 
   function prepare(kind, name, opts) {
     calls.push({ name, opts });
-    const load = { ...deferred(), adId: opts.adId };
+    const load = { ...deferred(), adId: opts.adId, page };
     pendingLoads[kind].push(load);
     if (fake.loads === 'auto') fake.loadOk(kind);
     return load.promise;

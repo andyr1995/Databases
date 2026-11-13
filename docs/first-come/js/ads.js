@@ -92,17 +92,23 @@ export function createAdManager({ platform, store, rules = AD_RULES, now = () =>
         console.warn('Advert provider failed to start', e);
       }
       syncBanner();
-      // Ask the store in the background whether Remove Ads is owned (covers a reinstall or a
-      // new phone). Only a definite yes is acted on: "no" cannot be told apart from "could not
-      // reach the store", so a purchase is never taken away here.
-      if (platform.iap.available()) {
-        platform.iap
-          .owned()
-          .then((owned) => {
-            if (owned) setEntitlement(true);
-          })
-          .catch(() => {});
-      }
+      this.checkEntitlement();
+    },
+
+    /**
+     * Ask the store, in the background, whether Remove Ads is owned. Covers a reinstall, a new
+     * phone, and a purchase that was approved later (Ask to Buy). Only a definite yes is acted
+     * on: "no" cannot be told apart from "could not reach the store", so a purchase is never
+     * taken away here.
+     */
+    checkEntitlement() {
+      if (adsOff() || !platform.iap.available()) return;
+      platform.iap
+        .owned()
+        .then((owned) => {
+          if (owned) setEntitlement(true);
+        })
+        .catch(() => {});
     },
 
     /** True when the player has paid to remove adverts. */
