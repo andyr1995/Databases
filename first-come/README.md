@@ -25,7 +25,7 @@ Paths that start with `docs/` are from the top of the repository; the rest are i
 | `ios/` | The Xcode project (Capacitor 8, Swift Package Manager). Regenerated settings come from `scripts/configure-ios.mjs`; do not edit them by hand. |
 | `scripts/` | Tools: build the bridge, configure the Xcode project, build the level tables, draw the icon, take the screenshots. |
 | `test/`, `e2e/` | Automated tests. |
-| `ci/` | GitHub Actions workflows to build the app on a Mac in the cloud and upload it to TestFlight (see SHIPPING.md for why they are parked here). |
+| `ci/` | Templates of the two GitHub Actions workflows (build on a Mac in the cloud; upload to TestFlight). They are installed, filled in, in `.github/workflows/` at the top of the repository. |
 | `store/` | App Store text and screenshots. |
 
 ## Everyday commands
@@ -80,9 +80,15 @@ Verified on Linux, automatically, on every `npm test` / `npm run test:e2e`:
 - The whole game played in a headless Chromium at phone sizes, including the simulated advert and purchase flows.
 - The native bridge's logic, with fake plugins standing in for AdMob and StoreKit.
 
-**Not verified, because it needs a Mac, Xcode and Apple/Google accounts:** that the iOS app compiles, real AdMob
-adverts, the consent and tracking prompts, real purchases, haptics and the share sheet on a device. The first
-Xcode or CI build is where any of that would show up; see SHIPPING.md.
+Verified on a Mac, by the `iOS build` workflow on GitHub (it runs on every push that touches the game or this
+folder):
+
+- The Xcode project resolves its Swift packages and the app compiles for the iPhone simulator (first run:
+  13 November 2026, Xcode 26.6, unsigned).
+
+**Not verified, because it needs an Apple developer account, an AdMob account and a real iPhone:** signing and
+the TestFlight upload, real AdMob adverts, the consent and tracking prompts, real purchases, haptics and the
+share sheet on a device. Step 10 of SHIPPING.md is the checklist for that first run on a phone.
 
 ## Changing things
 
