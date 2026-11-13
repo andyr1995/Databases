@@ -3,7 +3,7 @@
 // placement rules, reward flow and layout can be previewed and tested without a device.
 
 /** @returns {import('./platform.js').AdProvider} */
-export function createMockAds({ fast = false } = {}) {
+export function createMockAds({ fast = false, hang = false } = {}) {
   const seconds = fast ? 1 : 4;
   let bannerEl = null;
   let heightCb = () => {};
@@ -32,10 +32,24 @@ export function createMockAds({ fast = false } = {}) {
       btn.style.cssText =
         'font:600 16px system-ui,sans-serif;padding:12px 22px;border-radius:999px;border:0;background:#fff;color:#101418;min-width:150px';
       el.append(label, note, btn);
+      if (kind === 'rewarded') {
+        // Real rewarded videos can be closed early, forfeiting the reward.
+        const skip = document.createElement('button');
+        skip.className = 'mock-ad-skip';
+        skip.textContent = 'Close without the reward';
+        skip.style.cssText = 'font:500 14px system-ui,sans-serif;padding:10px;border:0;background:none;color:#fff;opacity:.7;text-decoration:underline';
+        skip.addEventListener('click', () => {
+          clearInterval(timer);
+          el.remove();
+          resolve(false);
+        });
+        el.append(skip);
+      }
       document.body.appendChild(el);
 
       let left = seconds;
       let earned = false;
+      let timer = 0;
       const paint = () => {
         if (left > 0) {
           btn.textContent = kind === 'rewarded' ? `Reward in ${left}` : `Close in ${left}`;
@@ -49,7 +63,7 @@ export function createMockAds({ fast = false } = {}) {
         }
       };
       paint();
-      const timer = setInterval(() => {
+      timer = setInterval(() => {
         left -= 1;
         paint();
         if (left <= 0) clearInterval(timer);
@@ -60,6 +74,12 @@ export function createMockAds({ fast = false } = {}) {
         resolve(earned);
       });
     });
+
+  /** `&hang`: an advert that never appears and never answers, to test the way out. */
+  const never = (kind) => {
+    log.push(`${kind}:hung`);
+    return new Promise(() => {});
+  };
 
   return {
     name: 'mock',
@@ -91,11 +111,12 @@ export function createMockAds({ fast = false } = {}) {
     },
     interstitialReady: () => ready,
     showInterstitial: async () => {
+      if (hang) return never('interstitial');
       await overlay('interstitial');
       return true;
     },
     rewardedReady: () => ready,
-    showRewarded: () => overlay('rewarded'),
+    showRewarded: () => (hang ? never('rewarded') : overlay('rewarded')),
     privacyOptionsRequired: () => true,
     showPrivacyOptions: async () => {
       log.push('privacy');

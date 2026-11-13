@@ -45,7 +45,7 @@ after(async () => {
 });
 
 /** A fresh phone with nothing saved. Fails the test on any page error. */
-async function phone(t, { width = 390, height = 844, query = '', save = null, fixedTime = null } = {}) {
+async function phone(t, { width = 390, height = 844, query = '', save = null, fixedTime = null, prepare = null, expectErrors = null } = {}) {
   const context = await browser.newContext({
     viewport: { width, height },
     hasTouch: true,
@@ -58,6 +58,7 @@ async function phone(t, { width = 390, height = 844, query = '', save = null, fi
   const page = await context.newPage();
   // A fixed clock: Date reads this time, while timers keep running normally.
   if (fixedTime) await page.clock.setFixedTime(fixedTime);
+  if (prepare) await prepare(page, context);
   const problems = [];
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
   page.on('console', (m) => {
@@ -65,7 +66,9 @@ async function phone(t, { width = 390, height = 844, query = '', save = null, fi
   });
   t.after(async () => {
     await context.close();
-    assert.deepEqual(problems, [], 'the page reported errors');
+    // `expectErrors` lists errors a test provokes on purpose.
+    const unexpected = expectErrors ? problems.filter((text) => !expectErrors.test(text)) : problems;
+    assert.deepEqual(unexpected, [], 'the page reported errors');
   });
   await page.goto(base + query);
   await page.waitForSelector('.screen');
@@ -501,6 +504,217 @@ test('a Daily left open past midnight hands over to the new puzzle', async (t) =
   await page.waitForFunction((was) => document.querySelector('.title').textContent !== was, second);
   assert.equal(Number((await title(page)).replace(/\D+/g, '')), Number(second.replace(/\D+/g, '')) + 1);
   assert.equal(await hearts(page), 3);
+});
+
+/** Lose all three hearts of today's Daily. */
+async function loseThreeHearts(page) {
+  const { unsafe } = await advice(page, 'daily');
+  for (let i = 0; i < 3; i++) {
+    await tapBlock(page, unsafe[0]);
+    await page.waitForTimeout(1300);
+  }
+  await page.waitForSelector(OPEN_RESULT);
+  return unsafe[0];
+}
+const useUpHints = (page) =>
+  page.evaluate(() => {
+    window.__app.store.state.hints = 0;
+    window.__app.refresh();
+  });
+
+test('a video that is closed early pays nothing: no hint, no heart, no saved streak', async (t) => {
+  const page = await phone(t, { query: '?level=30&ads=mock&fast&debug' });
+  await useUpHints(page);
+  await page.locator('.hint-btn').click();
+  await page.waitForSelector('.mock-ad');
+  await page.locator('.mock-ad-skip').click();
+  await page.waitForSelector('.toast');
+  assert.match(await page.locator('.toast').innerText(), /No reward this time/);
+  assert.equal(await page.locator('.block.hinted').count(), 0);
+  assert.equal(await page.evaluate(() => window.__app.store.state.stats.hintsUsed), 0);
+  assert.equal(await page.locator('.ad-cover').count(), 0, 'the cover is gone once the advert has closed');
+
+  const daily = await phone(t, { query: '?daily&ads=mock&fast&debug' });
+  await loseThreeHearts(daily);
+  await sheetButton(daily, 'Watch a video for a heart').click();
+  await daily.waitForSelector('.mock-ad');
+  await daily.locator('.mock-ad-skip').click();
+  await daily.waitForSelector('.toast');
+  assert.equal(await daily.locator('.result-title').innerText(), 'Out of hearts', 'the offer is still there');
+  assert.equal(await hearts(daily), 0);
+});
+
+test('the extra heart comes once a day: losing it too ends the puzzle', async (t) => {
+  const page = await phone(t, { query: '?daily&ads=mock&fast' });
+  const wrong = await loseThreeHearts(page);
+  await sheetButton(page, 'Watch a video for a heart').click();
+  await page.waitForSelector('.mock-ad');
+  await page.locator('.mock-ad-close:not([disabled])').click();
+  await page.waitForFunction(() => !document.querySelector('.sheet-wrap:not(.out) .sheet.result'));
+  await tapBlock(page, wrong);
+  await page.waitForFunction(() => document.querySelector('.sheet-wrap:not(.out) .result-title')?.textContent === 'Not today');
+  assert.equal(await sheetButton(page, 'Watch a video for a heart').count(), 0, 'no second offer');
+  assert.deepEqual(await page.evaluate(() => window.__mockAds.log), ['rewarded']);
+});
+
+test('an advert that never comes back does not trap the player', async (t) => {
+  const page = await phone(t, { query: '?daily&ads=mock&fast&hang' });
+  await loseThreeHearts(page);
+  await sheetButton(page, 'Watch a video for a heart').click();
+  // The screen is covered while the advert is awaited, so nothing else can be tapped...
+  await page.waitForSelector('.ad-cover');
+  assert.equal(await page.locator('.ad-cover button').count(), 0);
+  // ...and when it takes too long there is a way back.
+  await page.locator('.ad-cover button', { hasText: 'Back to the game' }).click();
+  await page.waitForFunction(() => !document.querySelector('.ad-cover'));
+  assert.equal(await page.locator('.result-title').innerText(), 'Out of hearts');
+  await sheetButton(page, 'Give up for today').click();
+  await page.waitForFunction(() => document.querySelector('.sheet-wrap:not(.out) .result-title')?.textContent === 'Not today');
+
+  // The same in a level: after backing out, the board is playable and Hint can be asked again.
+  const level = await phone(t, { query: '?level=30&ads=mock&fast&hang&debug' });
+  await useUpHints(level);
+  await level.locator('.hint-btn').click();
+  await level.locator('.ad-cover button', { hasText: 'Back to the game' }).click();
+  await level.waitForFunction(() => !document.querySelector('.ad-cover'));
+  const { safe } = await advice(level);
+  await tapBlock(level, safe[0]);
+  await level.waitForSelector(`.block.done[data-b="${safe[0]}"]`);
+  await level.locator('.hint-btn').click();
+  await level.waitForSelector('.ad-cover');
+});
+
+test('no full-screen advert around the Daily, even when one is due', async (t) => {
+  const save = { level: 30, stats: { solved: 29 }, ads: { levelsSince: 9 } };
+  const page = await phone(t, { query: '?daily&ads=mock&fast&debug', save });
+  await solve(page, 'daily');
+  await sheetButton(page, 'Home').click();
+  await page.waitForSelector('.screen.home');
+  assert.deepEqual(await page.evaluate(() => window.__mockAds.log), [], 'nothing was shown around the Daily');
+  // An advert really was due: the next campaign level brings it.
+  await page.locator('.play').click();
+  await page.waitForSelector('.board');
+  await solve(page);
+  await sheetButton(page, 'Next level').click();
+  // It is announced first, then shown; the next level waits for it.
+  await page.waitForSelector('.ad-cover');
+  await page.waitForSelector('.mock-ad');
+  assert.deepEqual(await page.evaluate(() => window.__mockAds.log), ['interstitial']);
+  await page.locator('.mock-ad-close:not([disabled])').click();
+  await page.waitForFunction(() => document.querySelector('.title').textContent === 'Level 31');
+  assert.equal(await page.locator('.ad-cover').count(), 0);
+});
+
+test('inside the app, a bridge that fails to load never makes rewards free', async (t) => {
+  const page = await phone(t, {
+    query: '?level=30&debug',
+    expectErrors: /Native bridge failed|Failed to load resource|native-bridge/,
+    prepare: async (pg, context) => {
+      await context.addInitScript(() => {
+        window.Capacitor = { isNativePlatform: () => true };
+      });
+      await pg.route('**/vendor/native-bridge.js', (route) => route.abort());
+    },
+  });
+  await useUpHints(page);
+  assert.equal(await page.locator('.hint-btn .badge.video').count(), 1, 'a video is asked for, not handed out');
+  await page.locator('.hint-btn').click();
+  await page.waitForSelector('.toast');
+  assert.match(await page.locator('.toast').innerText(), /No video is available/);
+  assert.equal(await page.locator('.block.hinted').count(), 0);
+});
+
+test('a hint bought before the first tap is still there after Restart', async (t) => {
+  const page = await phone(t, { query: '?level=30' });
+  await page.locator('.hint-btn').click();
+  const hinted = await page.locator('.block.hinted').getAttribute('data-b');
+  const { unsafe } = await advice(page);
+  await tapBlock(page, unsafe[0]);
+  await page.waitForSelector('.cross');
+  await page.waitForFunction(() => !document.querySelector('.cross') && !document.querySelector('.claim.ghosted'));
+  await page.locator('.tool', { hasText: 'Restart' }).click();
+  assert.equal(await slips(page), '0');
+  assert.equal(await page.locator('.block.hinted').getAttribute('data-b'), hinted);
+  assert.equal(await page.locator('.hint-btn .badge').innerText(), '2', 'and it was not charged for again');
+});
+
+test('the streak offer: made on returning to the app, kept until answered, and checked again when pressed', async (t) => {
+  const streak = { streak: 5, best: 5, lastSolved: '2027-03-08' };
+  const save = { level: 12, stats: { solved: 11 }, daily: streak };
+  const at = (day, hour = 10) => new Date(2027, 2, day, hour, 0, 0);
+  const lastSolved = (page) => page.evaluate(() => window.__app.store.state.daily.lastSolved);
+  const comeBack = (page) => page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  const openSheets = (page) => page.locator('.sheet-wrap:not(.out)').count();
+
+  // Yesterday was played: nothing to offer. The app is then left open and brought back two days on.
+  const page = await phone(t, { query: '?ads=mock&fast&debug', save, fixedTime: at(9) });
+  await page.waitForSelector('.screen.home');
+  assert.equal(await openSheets(page), 0);
+  await page.clock.setFixedTime(at(10));
+  await comeBack(page);
+  await page.waitForSelector('.sheet');
+  assert.equal(await page.locator('.sheet-head h2').innerText(), 'Save your streak?');
+
+  // A stray tap beside the sheet does not throw the chance away.
+  await page.mouse.click(195, 60);
+  await page.waitForTimeout(300);
+  assert.equal(await openSheets(page), 1);
+  assert.equal(await page.evaluate(() => window.__app.store.state.daily.repairOffered), null);
+
+  // Left open for days, the button no longer works, and says so.
+  await page.clock.setFixedTime(at(13));
+  await page.locator('.sheet .primary').click();
+  await page.waitForFunction(() => !document.querySelector('.sheet-wrap:not(.out)'));
+  assert.equal(await lastSolved(page), '2027-03-08', 'nothing was changed');
+  assert.deepEqual(await page.evaluate(() => window.__mockAds.log), [], 'and no video was spent');
+
+  // Declining is an answer: it is not asked again that day.
+  const second = await phone(t, { query: '?ads=mock&fast&debug', save, fixedTime: at(10) });
+  await second.waitForSelector('.sheet');
+  await second.locator('.sheet button', { hasText: 'No thanks' }).click();
+  await second.waitForFunction(() => !document.querySelector('.sheet-wrap:not(.out)'));
+  await comeBack(second);
+  await second.waitForTimeout(300);
+  assert.equal(await openSheets(second), 0);
+
+  // Going straight to the Daily while a streak can still be saved asks first, then carries on.
+  const third = await phone(t, { query: '?daily&ads=mock&fast&debug', save, fixedTime: at(10) });
+  await third.waitForSelector('.sheet');
+  assert.equal(await third.locator('.sheet-head h2').innerText(), 'Save your streak?');
+  await third.locator('.sheet .primary').click();
+  await third.waitForSelector('.mock-ad');
+  await third.locator('.mock-ad-close:not([disabled])').click();
+  await third.waitForSelector('.board');
+  assert.match(await title(third), /^Daily #/);
+  assert.equal(await lastSolved(third), '2027-03-09', 'the missed day is forgiven');
+  assert.equal(await third.evaluate(() => window.__app.store.state.daily.lastRepair), '2027-03-10');
+
+  // One repair a week: three days after a repair there is no new offer.
+  const recent = { ...save, daily: { ...streak, lastRepair: '2027-03-07' } };
+  const fourth = await phone(t, { query: '?ads=mock&fast&debug', save: recent, fixedTime: at(10) });
+  await fourth.waitForSelector('.screen.home');
+  await fourth.waitForTimeout(300);
+  assert.equal(await openSheets(fourth), 0);
+});
+
+test('after a restore, Settings stops offering to sell Remove Ads', async (t) => {
+  const page = await phone(t, { query: '?ads=mock&fast&debug', save: { level: 5, stats: { solved: 4 } } });
+  await page.waitForSelector('.screen.home');
+  // Buy it, then pretend the save was lost (a reinstall): the store still knows.
+  await page.locator('.links .pill', { hasText: 'Remove ads' }).click();
+  await page.locator('.sheet .primary', { hasText: 'Remove ads' }).click();
+  await page.waitForFunction(() => !document.querySelector('.sheet-wrap:not(.out)'));
+  await page.evaluate(() => {
+    window.__app.store.state.removeAds = false;
+    window.__app.refresh();
+  });
+  await page.locator('.links .pill', { hasText: 'Settings' }).click();
+  assert.equal(await page.locator('.sheet-wrap:not(.out) .row', { hasText: 'Remove ads' }).count(), 1);
+  await page.locator('.sheet-wrap:not(.out) .row', { hasText: 'Restore purchases' }).click();
+  await page.waitForFunction(() => window.__app.store.state.removeAds === true);
+  await page.waitForFunction(() => document.querySelectorAll('.sheet-wrap:not(.out)').length === 1);
+  assert.equal(await page.locator('.sheet-wrap:not(.out) .row', { hasText: 'Remove ads' }).count(), 0);
+  assert.equal(await page.locator('.sheet-wrap:not(.out) .row', { hasText: 'Restore purchases' }).count(), 1);
 });
 
 test('everything fits on a small phone', async (t) => {

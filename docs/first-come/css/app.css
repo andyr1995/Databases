@@ -371,6 +371,10 @@ p {
   gap: 16px;
   padding: 8px 16px 14px;
 }
+/* Keep the buttons well clear of the advert banner, so a tap meant for one never lands on the other. */
+:root.banner-wanted .tools {
+  padding-bottom: 26px;
+}
 .tool {
   position: relative;
   width: 104px;
@@ -952,6 +956,29 @@ p {
 }
 .big-heart.broken {
   color: #7c7fb6;
+}
+
+/* ---- the cover shown while a full-screen advert is on its way ---- */
+
+.ad-cover {
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
+  background: rgba(11, 9, 32, 0.86);
+  font-size: 18px;
+  font-weight: 700;
+  text-align: center;
+  animation: fade-in 0.15s ease-out;
+}
+.ad-cover .secondary {
+  width: auto;
+  padding: 0 24px;
 }
 
 /* ---- toast ---- */

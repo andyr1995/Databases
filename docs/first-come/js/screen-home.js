@@ -67,9 +67,16 @@ export function homeScreen(app) {
     ),
   );
 
+  let shownFor = dateKey();
+
   function refresh() {
     const s = store.state;
     const today = dateKey();
+    if (today !== shownFor) {
+      // Midnight passed with Home open: a streak that can be saved is offered now.
+      shownFor = today;
+      app.offerStreakRepair();
+    }
     const stars = Object.values(s.stars).reduce((a, b) => a + b, 0);
     playLabel.textContent = s.stats.solved === 0 && !s.resume.campaign ? 'Play' : `Level ${s.level}`;
     playSub.textContent = stars > 0 ? `${stars} ${stars === 1 ? 'star' : 'stars'} collected` : 'Start here';

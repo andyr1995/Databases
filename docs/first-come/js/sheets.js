@@ -34,12 +34,24 @@ export function openSettings(app) {
       if (on) app.haptic('soft');
     }),
   ];
+  /** @type {{close: () => void}} */
+  let sheet;
+  let restoring = false;
   if (ads.removeAdsAvailable()) {
     if (!ads.adsOff()) rows.push(linkRow('Remove ads', () => app.openRemoveAds()));
     rows.push(
       linkRow('Restore purchases', async () => {
+        if (restoring) return;
+        restoring = true;
+        const wasOff = ads.adsOff();
         const found = await ads.restorePurchases();
+        restoring = false;
         shell.toast(found ? 'Purchase restored. Adverts are off.' : 'No earlier purchase was found.');
+        // Draw the sheet again so it stops offering to sell what is now owned.
+        if (found && !wasOff) {
+          sheet.close();
+          openSettings(app);
+        }
       }),
     );
   }
@@ -50,7 +62,8 @@ export function openSettings(app) {
     linkRow('Help and contact', () => platform.openExternal(APP.supportUrl)),
     h('p.fineprint', { text: `${APP.name} ${APP.version}` }),
   );
-  return shell.sheet({ title: 'Settings', body: h('div.rows', null, rows) });
+  sheet = shell.sheet({ title: 'Settings', body: h('div.rows', null, rows) });
+  return sheet;
 }
 
 export function openStats(app) {
@@ -115,6 +128,12 @@ export function openHelp(app) {
 
 export function openRemoveAds(app) {
   const { ads, shell } = app;
+  if (ads.adsOff()) {
+    return shell.sheet({
+      title: 'Go ad-free',
+      body: h('div.shop', null, h('p', { text: 'You already own this. Adverts are off.' })),
+    });
+  }
   const price = h('span', { text: '' });
   let busy = false;
   /** @type {{close: () => void}} */
@@ -159,7 +178,10 @@ export function openRemoveAds(app) {
       'button.ghost',
       {
         onclick: async () => {
+          if (busy) return;
+          busy = true;
           const found = await ads.restorePurchases();
+          busy = false;
           if (found) sheet.close();
           shell.toast(found ? 'Purchase restored. Adverts are off.' : 'No earlier purchase was found.');
         },
@@ -171,24 +193,46 @@ export function openRemoveAds(app) {
   return sheet;
 }
 
+/** May a missed-day streak be saved right now? (Also re-checked when the button is pressed.) */
+function streakRepairDue(d, today) {
+  if (!d.lastSolved || d.streak < 2) return false;
+  // Exactly one day was missed, and today has not been played yet.
+  if (daysBetween(d.lastSolved, today) !== 2 || d.history[today]) return false;
+  // One repair a week: a streak is for playing, not for watching a video every day.
+  if (d.lastRepair && daysBetween(d.lastRepair, today) < 7) return false;
+  return true;
+}
+
+/** True while the offer is on screen, so it is never stacked on top of itself. */
+let repairOfferOpen = false;
+
 /**
- * Missed exactly one day? Offer to keep the streak alive, once.
+ * Missed exactly one day? Offer to keep the streak alive.
+ * The offer counts as made only once the player has answered it, so a sheet that was
+ * never answered (the app was closed, no video was ready) comes back.
+ * @param {any} app
+ * @param {() => void} [onDone]  called after the player has answered, either way
  * @returns {boolean} whether the offer was shown
  */
-export function maybeOfferStreakRepair(app) {
+export function maybeOfferStreakRepair(app, onDone) {
   const { store, ads, shell } = app;
   const d = store.state.daily;
   const today = dateKey();
-  if (!d.lastSolved || d.streak < 2 || d.repairOffered === today) return false;
-  if (daysBetween(d.lastSolved, today) !== 2) return false;
+  if (repairOfferOpen || d.repairOffered === today || !streakRepairDue(d, today)) return false;
   // Offer it even if no video has loaded yet (adverts are still starting when the app
   // opens): the button checks again when it is pressed.
   const free = ads.rewardMode() === 'free';
 
-  d.repairOffered = today;
-  store.save();
   /** @type {{close: () => void}} */
   let sheet;
+  let working = false;
+  const answered = () => {
+    d.repairOffered = dateKey();
+    store.save();
+    sheet.close();
+    app.refresh();
+    if (onDone) onDone();
+  };
   const body = h(
     'div.shop',
     null,
@@ -198,29 +242,59 @@ export function maybeOfferStreakRepair(app) {
       'button.primary',
       {
         onclick: async () => {
+          if (working) return;
+          // The sheet may have been left open: make sure the offer still stands.
+          if (!streakRepairDue(d, dateKey())) {
+            shell.toast('It is too late to save this streak.');
+            answered();
+            return;
+          }
           if (ads.rewardMode() === 'none') {
             shell.toast('No video is available right now. Try again in a moment.');
             return;
           }
+          working = true;
           const earned = await ads.watchRewarded();
+          working = false;
           if (!earned) {
-            shell.toast('Watch the whole video to save your streak.');
+            shell.toast('No reward this time. The video has to play to the end.');
+            return;
+          }
+          const now = dateKey();
+          if (!streakRepairDue(d, now)) {
+            answered();
             return;
           }
           const y = new Date();
           y.setDate(y.getDate() - 1);
           d.lastSolved = dateKey(y);
-          store.save();
-          sheet.close();
+          d.lastRepair = now;
           shell.toast(`Streak saved. Solve today’s Daily to make it ${d.streak + 1}!`);
-          app.refresh();
+          answered();
         },
       },
       free ? null : icon(ICONS.video, { size: 22 }),
       free ? 'Save my streak' : 'Watch a video to save it',
     ),
-    button('button.ghost', { onclick: () => sheet.close() }, 'No thanks'),
+    button(
+      'button.ghost',
+      {
+        onclick: () => {
+          if (!working) answered();
+        },
+      },
+      'No thanks',
+    ),
   );
-  sheet = shell.sheet({ title: 'Save your streak?', body });
+  // Only the two buttons close it: a stray tap must not throw the one chance away.
+  repairOfferOpen = true;
+  sheet = shell.sheet({
+    title: 'Save your streak?',
+    body,
+    dismissable: false,
+    onClose: () => {
+      repairOfferOpen = false;
+    },
+  });
   return true;
 }

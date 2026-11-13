@@ -219,7 +219,10 @@ export function gameScreen(app, { mode, level: startAt }) {
 
     if (finished) {
       busy = true;
-      later(() => showResult({ won: !!finished.won, slips: finished.slips, story: unpackStory(finished.story), again: true }), 350);
+      later(
+        () => showResult({ won: !!finished.won, slips: finished.slips, hints: hintsUsed, story: unpackStory(finished.story), again: true }),
+        350,
+      );
     } else if (session.lost) {
       busy = true;
       later(offerHeart, 350);
@@ -331,10 +334,14 @@ export function gameScreen(app, { mode, level: startAt }) {
     if (daily || busy || session.taps.length === 0) return;
     sfx.restart();
     session.restart();
-    hintedAt = -1;
-    hintsUsed = 0;
+    // A hint bought before the first block went is for this very position: keep it.
+    if (hintedAt !== session.position.done) {
+      hintedAt = -1;
+      hintsUsed = 0;
+    }
     busy = false;
     board.reset(session.position);
+    showPaidHint();
     saveResume();
     updateHud();
     setCoach('');
@@ -357,7 +364,7 @@ export function gameScreen(app, { mode, level: startAt }) {
     }
     if (how === 'ad') {
       const earned = await ads.watchRewarded();
-      if (!earned) shell.toast(`Watch the whole video to get your ${whatFor}.`);
+      if (!earned) shell.toast('No reward this time. The video has to play to the end.');
       return earned;
     }
     return true;
@@ -371,7 +378,15 @@ export function gameScreen(app, { mode, level: startAt }) {
       busy = true;
       const ok = await payForHelp('hint');
       busy = false;
-      if (destroyed || !ok) return;
+      if (destroyed) {
+        // The level is gone, but what was paid for is not lost: keep it as a token.
+        if (ok) {
+          store.state.hints++;
+          store.save();
+        }
+        return;
+      }
+      if (!ok) return;
       hintedAt = session.position.done;
       hintsUsed++;
       store.state.stats.hintsUsed++;
@@ -467,7 +482,7 @@ export function gameScreen(app, { mode, level: startAt }) {
     busy = true;
     recordDaily(false);
     updateHud();
-    showResult({ won: false, slips: session.slips, story: session.story });
+    showResult({ won: false, slips: session.slips, hints: hintsUsed, story: session.story });
   }
 
   // ---- winning ----
@@ -502,10 +517,10 @@ export function gameScreen(app, { mode, level: startAt }) {
       sfx.win();
       app.haptic('success');
     }, afterMs + 80);
-    later(() => showResult({ won: true, slips: session.slips, story: session.story, earnedHint }), afterMs + 1250);
+    later(() => showResult({ won: true, slips: session.slips, hints: hintsUsed, story: session.story, earnedHint }), afterMs + 1250);
   }
 
-  function showResult({ won, slips, story, earnedHint = false, again = false }) {
+  function showResult({ won, slips, hints = 0, story, earnedHint = false, again = false }) {
     const stars = won ? starsFor(slips) : 0;
     const body = [];
     if (won) {
@@ -527,7 +542,7 @@ export function gameScreen(app, { mode, level: startAt }) {
       : daily
         ? again
           ? 'Solved today'
-          : slips === 0
+          : slips === 0 && hints === 0
             ? 'Flawless Daily!'
             : 'Daily solved!'
         : slips === 0
@@ -535,7 +550,8 @@ export function gameScreen(app, { mode, level: startAt }) {
           : 'Solved!';
     const slipText = slips === 0 ? 'no slips' : `${slips} ${slips === 1 ? 'slip' : 'slips'}`;
     const count = level.blocks.length;
-    const detail = won ? `${count} ${count === 1 ? 'block' : 'blocks'} · ${slipText}` : 'A new puzzle arrives at midnight.';
+    const hintText = daily && hints > 0 ? ` · ${hints} ${hints === 1 ? 'hint' : 'hints'}` : '';
+    const detail = won ? `${count} ${count === 1 ? 'block' : 'blocks'} · ${slipText}${hintText}` : 'A new puzzle arrives at midnight.';
     body.push(h('h2.result-title', { text: headline }), h('p.result-detail', { text: detail }));
     if (earnedHint) body.push(h('div.chip', null, icon(ICONS.hint, { size: 18 }), '+1 hint'));
 
@@ -576,7 +592,7 @@ export function gameScreen(app, { mode, level: startAt }) {
           {
             onclick: async () => {
               const outcome = await app.platform.share(
-                dailyShare({ number: dailyLabelNumber(today), story, won, slips, stars, streak: won ? streak : 0 }),
+                dailyShare({ number: dailyLabelNumber(today), story, won, slips, hints, stars, streak: won ? streak : 0 }),
               );
               if (outcome === 'copied') shell.toast('Copied. Paste it to a friend!');
               else if (outcome === 'failed') shell.toast('Sharing is not available here.');
@@ -598,8 +614,11 @@ export function gameScreen(app, { mode, level: startAt }) {
               if (going) return;
               going = true;
               sheet.close();
-              await ads.interstitialIfDue();
-              if (!destroyed) load(levelNo + 1);
+              try {
+                await ads.interstitialIfDue();
+              } finally {
+                if (!destroyed) load(levelNo + 1);
+              }
             },
           },
           'Next level',

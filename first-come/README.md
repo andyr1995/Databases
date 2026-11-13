@@ -57,17 +57,33 @@ Handy addresses while testing:
 All of it is in `docs/first-come/js/ads.js` (the rules) and `src/bridge/` (the real AdMob and StoreKit calls).
 
 - **Banner** on the play screen only. Never on the home screen, never on the Daily.
-- **Full-screen advert** only between campaign levels, when the player taps *Next level*: never before 8 levels
-  have been finished, at most one every 3 levels, never within 110 seconds of the last one or of opening the app,
-  and never straight after a rewarded video. Change the numbers in `AD_RULES`.
+- **Full-screen advert** only between campaign levels, after the player taps *Next level*: never before 12
+  levels have been finished, at most one every 3 levels, never within 110 seconds of the last one or of opening
+  or returning to the app, and never straight after a rewarded video watched to the end. It is announced for a
+  moment first, so it never appears under a finger. Change the numbers in `AD_RULES`.
 - **Rewarded video**, always the player's choice: a hint when they have none left, one extra heart per Daily, and
-  repairing a streak after exactly one missed day.
+  repairing a streak after exactly one missed day (at most once a week). A video closed early pays nothing.
+- While an advert is on its way the screen is covered, and if it has not appeared after 12 seconds the player is
+  offered a way back to the game, so a failed advert can never lock the game.
 - **Remove Ads** (one-off purchase, product id `remove_ads`): removes the banner and full-screen adverts and adds
   10 hints. Rewarded videos stay available.
 - **The web version has no adverts at all**; there, rewards are simply given.
 
 Until you put your own AdMob ids in `app.config.json` and set `"testing": false`, the app shows Google's test
 adverts, which earn nothing. That is deliberate: clicking your own live adverts gets an AdMob account banned.
+
+## Before you submit: things only you can do
+
+1. **Choose the bundle id** in `app.config.json` (`appId`). It is `app.firstcome.puzzle` now; it cannot be
+   changed after the first upload.
+2. **Put your own AdMob ids** in `app.config.json` and set `"testing": false` for the release build.
+3. **Add your name and a contact e-mail address** to `docs/first-come/support.html` and to the last section of
+   `docs/first-come/privacy.html`. Today the only contact route is a public GitHub issue, which needs an account
+   and is visible to everyone. Apple asks for an easy way to reach you, and UK/EU privacy rules expect the
+   policy to say who is responsible and how to contact them privately.
+4. **Read the privacy policy** before publishing it. It describes what the app does today; it is not legal advice.
+5. **Check the name** `First Come` in App Store Connect (step 3 of SHIPPING.md). The earlier working title,
+   Dibs, was dropped because a colour-capture puzzle game already uses it.
 
 ## What has and has not been verified
 

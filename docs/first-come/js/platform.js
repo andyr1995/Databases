@@ -167,7 +167,7 @@ export async function initPlatform() {
   const params = new URLSearchParams(location.search);
   if (params.get('ads') === 'mock') {
     const { createMockAds, createMockIap } = await import('./mock-ads.js');
-    platform.ads = createMockAds({ fast: params.has('fast') });
+    platform.ads = createMockAds({ fast: params.has('fast'), hang: params.has('hang') });
     platform.iap = createMockIap();
   }
   return platform;

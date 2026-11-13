@@ -5,11 +5,21 @@
 
 export const AD_RULES = {
   /** No full-screen advert until the player has finished this many levels in total. */
-  graceLevels: 8,
+  graceLevels: 12,
   /** At least this many finished levels between full-screen adverts. */
   minLevelsBetween: 3,
-  /** At least this long between full-screen adverts, and after the app is opened. */
+  /** At least this long between full-screen adverts, and after the app is opened or brought back. */
   minSecondsBetween: 110,
+  /**
+   * A full-screen advert is announced for this long before it appears, so it never
+   * lands under a finger that has just tapped "Next level" (milliseconds).
+   */
+  noticeMs: 700,
+  /**
+   * If an advert call has not come back after this long, the player is offered a way
+   * out. Longer than the 10 seconds the native bridge allows an advert to appear.
+   */
+  patienceMs: 12000,
 };
 
 /**
@@ -30,7 +40,7 @@ export function interstitialDue(s, rules = AD_RULES) {
  * @param {{state: any, save: () => void}} deps.store
  * @param {typeof AD_RULES} [deps.rules]
  * @param {() => number} [deps.now]
- * @param {{onOpen?: () => void, onClose?: () => void, onBannerHeight?: (px: number) => void, onBannerWanted?: (wanted: boolean) => void, onEntitlement?: (owned: boolean) => void}} [deps.hooks]
+ * @param {{onOpen?: (info: {kind: 'interstitial'|'rewarded', patienceMs: number, cancel: () => void}) => void, onClose?: () => void, onBannerHeight?: (px: number) => void, onBannerWanted?: (wanted: boolean) => void, onEntitlement?: (owned: boolean) => void}} [deps.hooks]
  */
 export function createAdManager({ platform, store, rules = AD_RULES, now = () => Date.now(), hooks = {} }) {
   // Opening the app counts as "just saw one": nobody gets an advert in their first two minutes back.
@@ -59,19 +69,45 @@ export function createAdManager({ platform, store, rules = AD_RULES, now = () =>
     if (hooks.onEntitlement) hooks.onEntitlement(owned);
   }
 
-  async function fullscreen(show) {
-    if (busy) return false;
+  /**
+   * Run one full-screen advert. Between onOpen and onClose the app covers the screen, so
+   * the player cannot wander off while an advert is on its way (which would lose a reward
+   * they then earn, or drop an advert onto the wrong screen).
+   *
+   * The provider is not trusted to answer: `cancel`, handed to onOpen, settles the call as
+   * "nothing shown" and frees the game; an answer that arrives after that is ignored.
+   * @param {'interstitial'|'rewarded'} kind
+   * @param {() => Promise<boolean>} show
+   * @returns {Promise<boolean>}
+   */
+  function fullscreen(kind, show) {
+    if (busy) return Promise.resolve(false);
     busy = true;
-    if (hooks.onOpen) hooks.onOpen();
-    try {
-      return await show();
-    } catch (e) {
-      console.warn('Advert failed', e);
-      return false;
-    } finally {
-      busy = false;
-      if (hooks.onClose) hooks.onClose();
-    }
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result) => {
+        if (settled) return;
+        settled = true;
+        busy = false;
+        if (hooks.onClose) hooks.onClose();
+        resolve(result);
+      };
+      if (hooks.onOpen) hooks.onOpen({ kind, patienceMs: rules.patienceMs, cancel: () => finish(false) });
+      const start = () => {
+        if (settled) return;
+        Promise.resolve()
+          .then(show)
+          .then(
+            (result) => finish(!!result),
+            (e) => {
+              console.warn('Advert failed', e);
+              finish(false);
+            },
+          );
+      };
+      if (kind === 'interstitial' && rules.noticeMs > 0) setTimeout(start, rules.noticeMs);
+      else start();
+    });
   }
 
   function resetClock() {
@@ -141,9 +177,17 @@ export function createAdManager({ platform, store, rules = AD_RULES, now = () =>
         rules,
       );
       if (!due) return false;
-      const shown = await fullscreen(() => p.showInterstitial());
+      // The time rule restarts the moment an advert is asked for, whatever the provider then
+      // reports, so a provider that wrongly says "not shown" can never cause one after every level.
+      lastAt = now();
+      const shown = await fullscreen('interstitial', () => p.showInterstitial());
       if (shown) resetClock();
       return shown;
+    },
+
+    /** The app has come back after being away for a while: treat it like a fresh start. */
+    resumed() {
+      lastAt = now();
     },
 
     /**
@@ -164,9 +208,9 @@ export function createAdManager({ platform, store, rules = AD_RULES, now = () =>
       const p = provider();
       if (!p.enabled()) return true;
       if (!p.rewardedReady()) return false;
-      const earned = await fullscreen(() => p.showRewarded());
-      // Having just chosen to watch a video, the player is spared the next full-screen advert.
-      resetClock();
+      const earned = await fullscreen('rewarded', () => p.showRewarded());
+      // Having just watched a video by choice, the player is spared the next full-screen advert.
+      if (earned) resetClock();
       return earned;
     },
 

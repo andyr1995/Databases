@@ -136,6 +136,9 @@ test('the share text tells the story without naming a block', () => {
   assert.equal(flawless.text, 'First Come #3 ⭐⭐⭐\n🟩🟩\nFlawless!');
   const lost = dailyShare({ number: 3, story: [false, true, false, false], won: false, slips: 3, stars: 0, streak: 0 });
   assert.equal(lost.text, 'First Come #3 💔\n🟥🟩🟥🟥\nOut of hearts');
+  // A Daily solved with hints says so, and is never called flawless.
+  const hinted = dailyShare({ number: 3, story: [true, true], won: true, slips: 0, hints: 2, stars: 3, streak: 1 });
+  assert.equal(hinted.text, 'First Come #3 ⭐⭐⭐\n🟩🟩\nSolved with no slips 💡×2');
   assert.deepEqual(unpackStory(packStory([true, false, true])), [true, false, true]);
   assert.deepEqual(unpackStory(undefined), []);
 });

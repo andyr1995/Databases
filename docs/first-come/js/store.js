@@ -22,8 +22,10 @@ export function defaultState() {
       streak: 0,
       best: 0,
       lastSolved: null,
-      /** The date a streak repair was last offered, so it is offered once. */
+      /** The date a streak repair offer was last answered, so it is not asked twice in a day. */
       repairOffered: null,
+      /** The date a streak was last repaired: at most one repair a week. */
+      lastRepair: null,
       /** dateKey -> {won, slips, stars, hints, extra, story, taps} */
       history: {},
     },
@@ -93,6 +95,7 @@ export function sanitize(state) {
     d.streak = 0;
   }
   if (typeof d.repairOffered !== 'string' || !DATE.test(d.repairOffered)) d.repairOffered = null;
+  if (typeof d.lastRepair !== 'string' || !DATE.test(d.lastRepair)) d.lastRepair = null;
   for (const key of Object.keys(d.history)) {
     const e = d.history[key];
     if (!DATE.test(key) || !e || typeof e !== 'object') {

@@ -162,7 +162,7 @@ test('values of the wrong type in a save are replaced, so the game always starts
 });
 
 test('full-screen adverts respect the grace period, the gap in levels and the gap in time', () => {
-  const ok = { removeAds: false, solvedTotal: 10, levelsSince: 3, lastAt: 0, now: 200000 };
+  const ok = { removeAds: false, solvedTotal: 12, levelsSince: 3, lastAt: 0, now: 200000 };
   assert.equal(interstitialDue(ok), true);
   assert.equal(interstitialDue({ ...ok, removeAds: true }), false);
   assert.equal(interstitialDue({ ...ok, solvedTotal: AD_RULES.graceLevels - 1 }), false);
@@ -192,52 +192,144 @@ function fakeWorld({ enabled = true, rewardedReady = true, earn = true } = {}) {
   const state = defaultState();
   const store = { state, save() {} };
   const events = [];
+  let cancel = null;
   const manager = createAdManager({
     platform: { ads, iap },
     store,
+    // No announcement pause in these tests; the pacing rules are the real ones.
+    rules: { ...AD_RULES, noticeMs: 0 },
     now: () => clock,
-    hooks: { onOpen: () => events.push('open'), onClose: () => events.push('close'), onEntitlement: (o) => events.push(`owned:${o}`) },
+    hooks: {
+      onOpen: (info) => {
+        events.push(`open:${info.kind}`);
+        cancel = info.cancel;
+      },
+      onClose: () => events.push('close'),
+      onEntitlement: (o) => events.push(`owned:${o}`),
+    },
   });
-  return { manager, state, shown, events, approveLater, banner: () => bannerOn, tick: (s) => void (clock += s * 1000) };
+  return { manager, state, shown, events, approveLater, ads, cancel: () => cancel(), banner: () => bannerOn, tick: (s) => void (clock += s * 1000) };
 }
 
 test('the advert manager paces full-screen adverts through a session', async () => {
   const w = fakeWorld();
   await w.manager.init();
-  const finishLevel = async () => {
+  const finishLevel = async (seconds) => {
     w.state.stats.solved++;
     w.manager.levelCompleted();
-    w.tick(40);
+    w.tick(seconds);
     return w.manager.interstitialIfDue();
   };
-  const results = [];
-  for (let i = 0; i < 10; i++) results.push(await finishLevel());
-  // Nothing for the first eight levels; after that, at most one every three levels.
-  assert.deepEqual(results, [false, false, false, false, false, false, false, true, false, false]);
-  for (let i = 0; i < 4; i++) results.push(await finishLevel());
-  assert.deepEqual(results.slice(10), [true, false, false, true]);
-  assert.equal(w.events.filter((e) => e === 'open').length, 3);
+  // Slow play (200 s a level), so only the level rules decide: nothing for the first
+  // twelve levels, then at most one advert every three levels.
+  const slow = [];
+  for (let i = 0; i < 19; i++) slow.push(await finishLevel(200));
+  assert.deepEqual(
+    slow.map((shown, i) => (shown ? i + 1 : 0)).filter(Boolean),
+    [12, 15, 18],
+    'adverts after these levels and no others',
+  );
+  assert.equal(w.events.filter((e) => e === 'open:interstitial').length, 3);
 
-  // Coming back to the app later does not put an advert in front of the very next level.
-  const back = fakeWorld();
-  back.state.stats.solved = 30;
-  back.state.ads.levelsSince = 5;
-  await back.manager.init();
-  back.manager.levelCompleted();
-  back.tick(30);
-  assert.equal(await back.manager.interstitialIfDue(), false, 'not within the first 110 seconds of a session');
-  back.tick(100);
-  assert.equal(await back.manager.interstitialIfDue(), true);
+  // Fast play (10 s a level), so only the time rule decides: 110 seconds must pass.
+  const quick = fakeWorld();
+  quick.state.stats.solved = 50;
+  await quick.manager.init();
+  quick.tick(200);
+  quick.state.ads.levelsSince = 5;
+  assert.equal(await quick.manager.interstitialIfDue(), true);
+  const after = [];
+  for (let i = 0; i < 12; i++) {
+    quick.manager.levelCompleted();
+    quick.tick(10);
+    after.push(await quick.manager.interstitialIfDue());
+  }
+  assert.equal(after.indexOf(true), 10, 'the next advert comes at 110 seconds, not at three levels');
+});
+
+test('the 110 seconds are counted to the second, from opening the app and from coming back to it', async () => {
+  const w = fakeWorld();
+  w.state.stats.solved = 30;
+  w.state.ads.levelsSince = 5;
+  await w.manager.init();
+  w.tick(109);
+  assert.equal(await w.manager.interstitialIfDue(), false, 'not at 109 seconds');
+  w.tick(2);
+  assert.equal(await w.manager.interstitialIfDue(), true, 'at 111 seconds');
+
+  // Coming back after a real absence starts the two minutes again.
+  w.state.ads.levelsSince = 5;
+  w.tick(3600);
+  w.manager.resumed();
+  w.tick(60);
+  assert.equal(await w.manager.interstitialIfDue(), false);
+  w.tick(60);
+  assert.equal(await w.manager.interstitialIfDue(), true);
+});
+
+test('what the provider reports cannot cause an advert after every level, or cost the player their turn', async () => {
+  // A provider that shows the advert but wrongly reports "not shown".
+  const liar = fakeWorld();
+  liar.ads.showInterstitial = async () => (liar.shown.push('interstitial'), false);
+  liar.state.stats.solved = 30;
+  liar.state.ads.levelsSince = 5;
+  await liar.manager.init();
+  liar.tick(200);
+  assert.equal(await liar.manager.interstitialIfDue(), false);
+  liar.manager.levelCompleted();
+  liar.tick(20);
+  await liar.manager.interstitialIfDue();
+  assert.equal(liar.shown.length, 1, 'the time rule restarted when the advert was asked for');
+
+  // A video that was not earned leaves the full-screen advert counters alone.
+  const w = fakeWorld({ earn: false });
+  w.state.stats.solved = 30;
+  w.state.ads.levelsSince = 7;
+  await w.manager.init();
+  assert.equal(await w.manager.watchRewarded(), false);
+  assert.equal(w.state.ads.levelsSince, 7);
+});
+
+test('an advert that never answers does not lock the game: the way out frees it, and a late answer is ignored', async () => {
+  const w = fakeWorld();
+  let release;
+  w.ads.showRewarded = () => new Promise((r) => (release = r));
+  await w.manager.init();
+  const first = w.manager.watchRewarded();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(await w.manager.watchRewarded(), false, 'only one advert at a time');
+  w.cancel();
+  assert.equal(await first, false, 'giving up counts as no reward');
+  assert.deepEqual(w.events.filter((e) => e === 'close').length, 1, 'sound and the screen are given back');
+  release(true);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(w.events.filter((e) => e === 'close').length, 1, 'the late answer changes nothing');
+  // The manager is usable again.
+  w.ads.showRewarded = async () => true;
+  assert.equal(await w.manager.watchRewarded(), true);
+
+  // A provider that throws is treated as "nothing shown".
+  const broken = fakeWorld();
+  broken.ads.showRewarded = async () => {
+    throw new Error('boom');
+  };
+  await broken.manager.init();
+  assert.equal(await broken.manager.watchRewarded(), false);
+  assert.equal(await broken.manager.watchRewarded(), false, 'and it does not stay busy');
 });
 
 test('a rewarded video only pays out when earned, and buys a rest from full-screen adverts', async () => {
   const w = fakeWorld({ earn: false });
   await w.manager.init();
   assert.equal(w.manager.rewardMode(), 'ad');
-  assert.equal(await w.manager.watchRewarded(), false);
-  w.state.stats.solved = 20;
-  w.state.ads.levelsSince = 9;
-  assert.equal(await w.manager.interstitialIfDue(), false, 'the clock was reset by the video');
+  assert.equal(await w.manager.watchRewarded(), false, 'closed early: nothing is paid');
+  const paid = fakeWorld({ earn: true });
+  await paid.manager.init();
+  paid.state.stats.solved = 20;
+  paid.state.ads.levelsSince = 9;
+  paid.tick(500);
+  assert.equal(await paid.manager.watchRewarded(), true);
+  assert.equal(await paid.manager.interstitialIfDue(), false, 'a video watched to the end buys a rest from full-screen adverts');
 
   const none = fakeWorld({ rewardedReady: false });
   assert.equal(none.manager.rewardMode(), 'none');
