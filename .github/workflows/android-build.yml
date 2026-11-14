@@ -172,8 +172,10 @@ jobs:
           identity="package: name='$package_name' versionCode='$(config c.build)' versionName='$(config c.version)'"
           need apk_says "$identity"
           need aab_says "$identity"
-          need apk_says "application-label:'$(config c.appName)'"
-          need aab_says "application-label:'$(config c.appName)'"
+          # aapt2 prints the name with a backslash put before each backslash and double quote.
+          label="application-label:'$(config 'c.appName.replace(/[\\"]/g, "\\$&")')'"
+          need apk_says "$label"
+          need aab_says "$label"
           need apk_says "application-debuggable"
           if aab_says "application-debuggable"; then echo "::error::The release bundle is debuggable."; exit 1; fi
 

@@ -443,10 +443,34 @@ test('a MainActivity that was taken over and lost the edge-to-edge call is refus
   }
 });
 
+test('a package name that changes only in capital letters leaves MainActivity in its folder', () => {
+  // On a Mac or Windows disk com/Example and com/example are one folder, so a move there would
+  // write the file and then delete that same file. The file stays where it is, on every disk.
+  const dir = freshApp({ appId: 'com.Example.Fixture' });
+  configureAndroid({ root: dir });
+  const file = inMain(dir, 'java', 'com', 'Example', 'Fixture', 'MainActivity.java');
+  assert.ok(read(file).includes('\npackage com.Example.Fixture;\n'));
+
+  writeConfig(dir, { appId: 'com.example.fixture' });
+  const result = configureAndroid({ root: dir });
+  assert.deepEqual(result.removed, []);
+  assert.ok(result.changed.includes('android/app/src/main/java/com/Example/Fixture/MainActivity.java'));
+  assert.ok(read(file).includes('\npackage com.example.fixture;\n'));
+  assert.deepEqual(readdirSync(inMain(dir, 'java', 'com')), ['Example']);
+  assert.deepEqual(readdirSync(inMain(dir, 'java', 'com', 'Example')), ['Fixture']);
+  assert.deepEqual(configureAndroid({ root: dir, check: true }).changed, []);
+  assert.match(read(inAndroid(dir, 'app', 'build.gradle')), /namespace = "com\.example\.fixture"/);
+});
+
 test('the committed MainActivity is the one the script writes, and Capacitor still leaves edge to edge to the app', () => {
   const packageName = androidPackageName(JSON.parse(read(path.join(root, 'app.config.json'))));
-  const source = read(inMain(root, 'java', ...packageName.split('.'), 'MainActivity.java'));
+  // Found wherever it is: its folder may differ from the package name in capital letters (see the test above).
+  const files = readdirSync(inMain(root, 'java'), { recursive: true }).filter((name) => path.basename(name) === 'MainActivity.java');
+  assert.equal(files.length, 1);
+  assert.equal(files[0].toLowerCase(), path.join(...packageName.split('.'), 'MainActivity.java').toLowerCase());
+  const source = read(inMain(root, 'java', files[0]));
   assert.ok(source.startsWith('// Written by scripts/configure-android.mjs.'));
+  assert.ok(source.includes(`\npackage ${packageName};\n`));
   assert.match(source, /super\.onCreate\(savedInstanceState\);\n(?:\s*\/\/[^\n]*\n)*\s*EdgeToEdge\.enable\(this, SystemBarStyle\.dark\(Color\.TRANSPARENT\), SystemBarStyle\.dark\(Color\.TRANSPARENT\)\);/);
 
   // Why the call is there. Read from the Capacitor that is installed, so that an update which

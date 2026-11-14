@@ -33,6 +33,16 @@ How far to trust this guide:
   **Nothing has run on a phone or an emulator yet**, nothing has been uploaded to Google
   Play, and the release workflow has not yet run on GitHub. "What has not been verified" at
   the end lists exactly what is unproven.
+- **The release workflow can only be started once this work is on `main`.** It was written
+  on a branch. GitHub offers "Run workflow" only for a workflow whose file is on the
+  repository's default branch, which here is `main` (GitHub's words, read on 14 November
+  2026: "This event will only trigger a workflow run if the workflow file exists on the
+  default branch"). Until the branch is merged, "Android release" is not in the list under
+  Actions at all, and "Android build" is listed (it runs on every push to the branch) but
+  cannot be started by hand. So merge before step 12 at the latest: on GitHub, Pull
+  requests > New pull request, choose the branch, Create pull request, Merge pull request.
+  From then on make your changes on `main`: "Run workflow" builds the branch named in its
+  "Use workflow from" box, which is `main` unless you change it.
 - **The app's identity is set but yours to change.** `app.config.json` calls the app
   `First Come` with the package name `app.firstcome.puzzle` (the field `appId`, which is also
   the iPhone bundle id; an optional second field, `androidAppId`, gives Android a name of its
@@ -113,11 +123,18 @@ library), internet access and vibration.
 - Either **GitHub Actions** (the two workflows in `ci/` do the building on GitHub's Linux
   machines) or **a computer with Java 21 and the Android SDK** (Windows, macOS or Linux;
   installing Android Studio gives you both).
+- **Java on one computer, once, whichever of the two you chose.** Step 6 makes the upload key
+  with `keytool`, a program that comes with Java; GitHub cannot do that part for you. If
+  typing `keytool` in a terminal answers that there is no such command, install a JDK, for
+  example Eclipse Temurin 21 from <https://adoptium.net> (its Windows installer puts
+  `keytool` on the path by default), and open a new terminal.
 - **Node.js 22.18 or later** wherever you run `npm run sync`.
 - A real **Android phone**. Google requires one to verify a personal developer account, and
   adverts, the consent message and purchases cannot be judged anywhere else.
 - If your developer account is a personal one: **at least 12 people with Android phones** who
   will keep a test version installed for two weeks (step 2). Start asking now.
+- The **website published**: the privacy policy address is asked for in steps 8, 16 and 17. See
+  "Publishing the website" in README.md, and check that the page opens in a browser first.
 
 ---
 
@@ -343,9 +360,11 @@ account exists.
    `adb install -r the-file.apk` on the computer. `adb` comes with the Android SDK.
 4. **Before installing a newer debug APK, uninstall the old one.** Every run of the workflow
    signs its debug APK with a key made on the spot, and Android refuses to replace an app
-   with one signed by a different key ("App not installed"). Uninstalling normally deletes
-   the saved game of that test install, but not always: see "Android's backup brings saved
-   games back" below.
+   with one signed by a different key ("App not installed"). The same holds between a debug
+   APK and the app from Google Play (step 12), which Google signs with its own key: a phone
+   can hold only one of the two, and changing from one to the other, in either direction,
+   means uninstalling first. Uninstalling normally deletes the saved game of that install,
+   but not always: see "Android's backup brings saved games back" below.
 
 What to expect from this build: the game, Google's demo adverts, the Back button, sharing and
 vibration all work. The consent message appears only once it is published in AdMob (step 8).
@@ -366,7 +385,8 @@ Internal testing is the quickest track: up to 100 testers you name, no waiting f
 (Google says an internal test "might not be subject to" the usual reviews), and, in Google's
 words, a new bundle "becomes available to testers within minutes".
 
-1. Make the signed bundle: set up the secrets and run the release workflow (below), then
+1. Make the signed bundle: set up the secrets and run the release workflow (below; it is
+   listed under Actions only once this work is on `main`, see "Where things stand"), then
    download the `.aab` file from the run's Artifacts. Or build it on your own computer. For
    this step `admob.testing` stays `true`.
 2. Play Console > your app > Test and release > Testing > **Internal testing** > Create new
@@ -374,9 +394,11 @@ words, a new bundle "becomes available to testers within minutes".
    whose terms you accepted when creating the app); there is nothing to choose. Upload the
    `.aab`, give the release a name, and save and roll it out.
 3. On the Testers tab, make a list of email addresses (the Google accounts of the testers,
-   yourself first) and copy the link shown there. Open the link on the phone, accept, and
-   install the app from Google Play. It can take a while (Google says up to a few hours the
-   first time) before the listing is visible to testers.
+   yourself first) and copy the link shown there. **If the debug APK of step 11 is on the
+   phone, uninstall it first:** Google Play cannot install its own version over it (step 11,
+   point 4). Then open the link on the phone, accept, and install the app from Google Play.
+   It can take a while (Google says up to a few hours the first time) before the listing is
+   visible to testers.
 4. If Play Console refuses the bundle: "version code has already been used" means run the
    workflow again (its number goes up each run); a complaint about the signing key means the
    bundle was signed with a different key than the first upload; a complaint about the
@@ -393,18 +415,31 @@ page says only that the app must declare it, which this app does (the permission
 the billing library). Whether Play Console also wants a build with that permission uploaded
 before it lets you create a product needs checking; after step 12 one is there in any case.
 
-1. Play Console > your app > Monetize with Play > Products > **In-app products**. (Google
-   now calls these "one-time products", and the menu may say so; its help page still gives
-   the old name.) Click Create product.
+1. Play Console > your app > Monetize with Play > Products > **One-time products**. (These
+   used to be called "in-app products", and an older help page of Google's still says so;
+   the page to follow is "Overview of one-time products".) Click Create one-time product.
 2. **Product ID**: exactly the value of `iap.removeAdsProductId` in `app.config.json`, which
    is `remove_ads` today. Google's rules: it starts with a number or a lower-case letter and
    may contain numbers, lower-case letters, underscores and dots. **It can never be changed or
    used again**, not even after deleting the product, so type it carefully. It must be the
    same text as in App Store Connect, because the game has one setting for both stores.
 3. Name (up to 55 characters; Google recommends 25) and description (up to 200):
-   `store/listing.md` has both. Set the price.
-4. Save, then **Activate**. A product that is not active cannot be bought and shows no price.
-5. The product is bought once and kept for ever (it is never "consumed"), so it can be
+   `store/listing.md` has both. Below them is a section "Tax, compliance, and programs";
+   what it asks for this app needs checking, and nothing in the game depends on the
+   answers. Click Next.
+4. **Purchase option.** Google does not create a one-time product without one: it is the
+   way the product is sold. Enter a **Purchase option ID** of your own choosing, for
+   example `buy`. Its rules differ from the product ID's: it starts with a number or a
+   lower-case letter and may contain only numbers, lower-case letters and hyphens (no
+   underscore, so `remove_ads` does not fit here), and it cannot be changed afterwards.
+   The game never looks at this ID, so it has nothing to match. As purchase type choose
+   **Buy**, not Rent. One purchase option is all the game needs; leave the advanced
+   options as they are.
+5. Availability and pricing: a new product is available in all regions, which is right.
+   Set the price.
+6. Click **Activate**. A purchase option that is saved but not activated stays a draft, and
+   then the product cannot be bought and shows no price in the game.
+7. The product is bought once and kept for ever (it is never "consumed"), so it can be
    restored on a new phone. Nothing has to be set for that: it follows from how the game
    treats it.
 
@@ -430,7 +465,8 @@ methods that Google Play shows in place of a real card.
    the game on that phone.
 
 Licence testers may also buy in a build that did not come from Google Play, such as the debug
-APK of step 11, as long as its package name is the one in Play Console.
+APK of step 11, as long as its package name is the one in Play Console. (To put the debug APK
+on a phone that has the Google Play version, uninstall that version first: step 11, point 4.)
 
 ### 15. The first real run on a phone: a checklist
 
@@ -694,7 +730,8 @@ Mac machines, which cost more minutes than the Linux ones. Any other change here
 ### android-release.yml: the signed bundle for Google Play
 
 Runs only by hand: repository > Actions > "Android release" > Run workflow. **It has never
-been run.** It needs four repository secrets (Settings > Secrets and variables > Actions):
+been run.** It is in that list only once this work has been merged into `main` (see "Where
+things stand"). It needs four repository secrets (Settings > Secrets and variables > Actions):
 
 | Secret | What to put in |
 |---|---|
@@ -707,7 +744,7 @@ To encode the file, and copy the output into the secret:
 
 - macOS: `base64 -i upload-keystore.jks | pbcopy`
 - Linux: `base64 -w0 upload-keystore.jks`
-- Windows PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("upload-keystore.jks"))`
+- Windows PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes((Convert-Path upload-keystore.jks)))`
 
 What the workflow does: it first looks at `app.config.json` and stops if the package name
 is still a placeholder (`com.example.`...) or if `admob.testing` is `false` while an Android
@@ -732,7 +769,8 @@ If the first run fails, the likely causes, in rough order:
   has no key of that name.
 - **A newer release of an action behaves differently.** The workflows use
   `actions/setup-java@v6` and `actions/upload-artifact@v7` (with its option to upload one
-  file without zipping it), which could not be tried here.
+  file without zipping it). Both worked in the build workflow on 14 November 2026, so suspect
+  them only if the build workflow has started to fail as well.
 - **The Android SDK on the runner lacks a part.** The Android build tool downloads what it
   misses, which needs the licences to be accepted on the runner; GitHub's runners have them.
 
@@ -744,13 +782,18 @@ it and tells you where; the build finds it through the `ANDROID_HOME` variable o
 
 1. In this folder: `npm ci`, then `npm run sync`. Always run `npm run sync` before building:
    the copy of the web game and a few generated files are not committed and appear only then.
+   On Windows, the repository makes Git check these folders out with Unix line endings, which
+   the scripts need. A copy cloned before that rule was added (14 November 2026) may still
+   have Windows line endings, and then `npm run sync` stops with "cannot be reproduced exactly
+   by the parser": clone the repository afresh.
 2. A debug APK: `cd android`, then `./gradlew assembleDebug` (on Windows `gradlew.bat
    assembleDebug`). The file is `android/app/build/outputs/apk/debug/app-debug.apk`. With a
    phone attached by cable, `./gradlew installDebug` builds and installs it.
 3. In Android Studio instead: `npx cap open android`, wait for it to finish reading the
    project, choose a phone or an emulator at the top and press Run.
 4. A signed release bundle: set the four values of step 6, for example for one terminal
-   session
+   session (macOS or Linux; in Windows PowerShell write each line in the form
+   `$env:ANDROID_KEYSTORE_FILE = 'C:\full\path\to\upload-keystore.jks'` instead)
 
    ```
    export ANDROID_KEYSTORE_FILE=/full/path/to/upload-keystore.jks
@@ -760,7 +803,11 @@ it and tells you where; the build finds it through the `ANDROID_HOME` variable o
    ```
 
    or once and for all as four lines `NAME=value` in the file `gradle.properties` inside the
-   `.gradle` folder of your home folder (not the one in `android/`, which is committed). Then
+   `.gradle` folder of your home folder (not the one in `android/`, which is committed). In
+   that file write a Windows path with forward slashes
+   (`ANDROID_KEYSTORE_FILE=C:/Users/you/keys/upload-keystore.jks`): a backslash has another
+   meaning there, and with `C:\...\upload-keystore.jks` every Gradle build on the computer
+   stops with "Malformed \uxxxx encoding". Then
    raise `build` in `app.config.json`, `npm run sync`, and `./gradlew bundleRelease`. The
    file is `android/app/build/outputs/bundle/release/app-release.aab`. Check it with
    `jarsigner -verify` followed by the file's path, which must answer "jar verified".
@@ -815,7 +862,7 @@ changed anything, in either project.
 | `npm run check:config` | Only that first check: changes nothing; says what iPhone or Android would refuse. |
 | `npm run configure:android` | Only the Android part of the last step: apply `app.config.json` and `resources/android` to `android/`. |
 | `npm run configure:android -- --check` | Changes nothing; fails if `android/` is out of step with `app.config.json`. |
-| `npm run art` | Redraw the icons, the launch art and the Play listing graphics. |
+| `npm run art` | Redraw the icons, the launch art and the Play listing graphics. Needs Playwright: see "Everyday commands" in README.md. |
 | `npm test` | All tests, including the ones for the configure scripts. Needs no Android SDK. |
 | `./gradlew assembleDebug` (in `android/`) | Build the debug APK. |
 | `./gradlew bundleRelease` (in `android/`) | Build the release bundle: signed if the four signing values are set, unsigned otherwise. |

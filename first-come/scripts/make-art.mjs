@@ -8,8 +8,8 @@
 // With no arguments it uses the web folder named in app.config.json and the resources/
 // folder next to this one.
 //
-// Needs Playwright's Chromium (already installed in Claude Code cloud sessions;
-// elsewhere: `npx playwright install chromium`).
+// Needs Playwright and its Chromium (both already there in Claude Code cloud sessions;
+// elsewhere: `npm install --no-save playwright && npx playwright install chromium`).
 import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';

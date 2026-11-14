@@ -235,7 +235,8 @@ jobs:
           holds() { grep -qxF -- "$1" <<<"$files"; }
 
           need says "package: name='$package_name' versionCode='$VERSION_CODE' versionName='$(config c.version)'"
-          need says "application-label:'$(config c.appName)'"
+          # aapt2 prints the name with a backslash put before each backslash and double quote.
+          need says "application-label:'$(config 'c.appName.replace(/[\\"]/g, "\\$&")')'"
           if says "application-debuggable"; then echo "::error::The release bundle is debuggable."; exit 1; fi
           need says "uses-permission: name='com.google.android.gms.permission.AD_ID'"
           need says "uses-permission: name='com.android.vending.BILLING'"

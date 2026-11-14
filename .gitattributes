@@ -1,0 +1,7 @@
+# First Come: its scripts and tests compare these files byte for byte, so they are checked out
+# with Unix line endings on every computer, whatever Git's core.autocrlf says (Git for Windows
+# turns that on by default, and a checkout with Windows line endings stops `npm run sync`).
+/first-come/** text=auto eol=lf
+/docs/first-come/** text=auto eol=lf
+# A Windows batch file, committed with Windows line endings: leave it exactly as it is.
+/first-come/android/gradlew.bat -text

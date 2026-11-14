@@ -73,7 +73,11 @@ Rate it honestly rather than aiming for a number.
 
     The first release. Thank you for playing!
 
-## URLs (once the branch is merged and GitHub Pages has deployed)
+## URLs
+
+These addresses show "404" until the website has been published. Merging to `main` may not be enough by itself:
+follow "Publishing the website" in the [README](../README.md) and open each address in a browser before you
+paste it anywhere.
 
 - Marketing URL: https://andyr1995.github.io/Databases/first-come/
 - Support URL:   https://andyr1995.github.io/Databases/first-come/support.html
@@ -142,7 +146,7 @@ headings in capitals are fine there.
 
 Upload the screenshots in the same order: 1 play, 2 slip, 3 daily, 4 result, 5 home. Do not upload the iPhone
 set to Play: at 1320 x 2868 it is taller than the 2:1 that Play allows. `npm run art` and `npm run screenshots`
-recreate all of these.
+recreate all of these (both need Playwright: see "Everyday commands" in the README).
 
 ## Category and contact details
 
@@ -153,13 +157,17 @@ recreate all of these.
 - Privacy policy: https://andyr1995.github.io/Databases/first-come/privacy.html (required, because the app
   shows adverts)
 
+Both addresses must be live before you enter them: see "Publishing the website" in the [README](../README.md).
+
 ## In-app product
 
-Play Console > your app > Monetize with Play > Products > In-app products (Google now calls these one-time products; not a
+Play Console > your app > Monetize with Play > Products > One-time products (formerly called in-app products; not a
 subscription). Step 13 of SHIPPING-ANDROID.md walks through it.
 
 - Product ID: `remove_ads` (must match `iap.removeAdsProductId` in `app.config.json`; it cannot be changed or
   reused once created)
 - Name: Remove Ads
 - Description: Removes banners and adverts between levels, and adds 10 hints.
+- Purchase option ID: `buy` (your choice; lower-case letters, numbers and hyphens only; the game does not use it)
+- Purchase type: Buy (not Rent)
 - Suggested price: £2.99 / $2.99

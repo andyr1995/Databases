@@ -857,7 +857,13 @@ function planMainActivity(root, config, plan, remove) {
     const [line] = packageLines;
     wantedSource = source.slice(0, line.index) + line[1] + packageName + line[2] + source.slice(line.index + line[0].length);
   }
-  const wanted = path.join(javaDir, ...packageName.split('.'), 'MainActivity.java');
+  // A folder that differs from the package name only in capital and small letters is not a
+  // move: the file is rewritten where it stands. On a disk that ignores letter case (the usual
+  // kind on macOS and Windows) the two spellings are one folder, so "moving" the file would
+  // write it and then delete that same file. The Java compiler is handed the file itself and
+  // does not look at the folder's name, so the build is the same either way.
+  const moved = path.join(javaDir, ...packageName.split('.'), 'MainActivity.java');
+  const wanted = moved.toLowerCase() === found[0].toLowerCase() ? found[0] : moved;
   plan.set(wanted, wantedSource);
   if (found[0] !== wanted) remove.push(found[0]);
 }

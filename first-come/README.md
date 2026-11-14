@@ -6,8 +6,11 @@ An original logic puzzle for iPhone, Android and the web. Tap a block and its co
 claiming each free square until something is in the way. A claimed square stays claimed, so whoever goes later
 gets cut short. Every block goes once; fill every square. The whole puzzle is the order.
 
-- **Play it in a browser:** <https://andyr1995.github.io/Databases/first-come/> (live once this is merged to
-  `main`; GitHub Pages publishes the `docs/` folder).
+- **Play it in a browser:** <https://andyr1995.github.io/Databases/first-come/>. Not live yet, and merging this
+  to `main` may not be enough by itself: see "Publishing the website" below.
+- **Merge this into `main` first.** It was written on a branch, and GitHub only lets you start a workflow
+  by hand ("Run workflow") once its file is on the default branch, `main`. Until then the two release
+  workflows ("Android release" and "iOS TestFlight") are not even listed under Actions.
 - **Ship it to the App Store:** follow [SHIPPING.md](SHIPPING.md).
 - **Ship it to Google Play:** follow [SHIPPING-ANDROID.md](SHIPPING-ANDROID.md).
 - **Try it on an Android phone today:** every push builds an installable test app. On GitHub open
@@ -52,6 +55,19 @@ npm run art            # redraws the app icons, web icons, launch image and Goog
 npm run screenshots    # retakes the App Store and Google Play screenshots
 ```
 
+`npm run test:e2e`, `npm run art` and `npm run screenshots` drive a headless Chromium through Playwright, which
+`npm install` does not bring. A Claude Code cloud session already has both. On any other computer these three
+stop with `Cannot find module 'playwright'` until you run, in this folder:
+
+```
+npm install --no-save playwright
+npx playwright install chromium
+```
+
+`--no-save` is on purpose: a copy written into `package.json` would take the place of the one in a cloud session
+and ask for a browser that session does not have. A later `npm install` removes Playwright again, so repeat the
+first line after one.
+
 To build the Android app on your own computer (needs Java 21 and the Android SDK; Android Studio
 brings both): `npm run sync`, then in `android/` run `./gradlew assembleDebug`. The app is then at
 `android/app/build/outputs/apk/debug/app-debug.apk`. Or open `android/` in Android Studio and press Run.
@@ -87,6 +103,28 @@ Until you put your own AdMob ids in `app.config.json` (the iPhone app and the An
 own set) and set `"testing": false`, the app shows Google's test adverts, which earn nothing. That is
 deliberate: clicking your own live adverts gets an AdMob account banned.
 
+## Publishing the website
+
+The web game, the privacy policy and the support page are the `docs/first-come/` folder. One workflow publishes
+the whole `docs/` folder to GitHub Pages: `.github/workflows/update-prices.yml` ("Update fuel prices and
+deploy"), which belongs to the fuel price app in this repository. Nothing else publishes the pages.
+
+GitHub has had that workflow switched off since 1 October 2026 (checked 14 November 2026). It does that to
+scheduled workflows when a public repository has had no activity for 60 days. A workflow that is switched off
+is not started by a push, so until it is switched on the addresses show "404". After merging to `main`:
+
+1. On GitHub open Actions > "Update fuel prices and deploy". If the page says the workflow is disabled, press
+   **Enable workflow**.
+2. Press **Run workflow** (branch `main`) and wait for the run to turn green. It fetches the fuel prices first;
+   if that step fails nothing is published, so run it again later.
+3. Open <https://andyr1995.github.io/Databases/first-come/privacy.html> and
+   <https://andyr1995.github.io/Databases/first-come/support.html> in a browser. Give the addresses to Apple,
+   Google or AdMob only when both show the page. The game's own "Privacy policy" and "Help and contact" rows
+   open the same two addresses.
+
+GitHub switches the workflow off again after another 60 days without activity. Pages already published stay
+up, but later changes to the web game or to these pages will not appear until it is switched on again.
+
 ## Before you submit: things only you can do
 
 1. **Choose the app id** in `app.config.json` (`appId`). It is `app.firstcome.puzzle` now. It is the iPhone
@@ -105,6 +143,8 @@ deliberate: clicking your own live adverts gets an AdMob account banned.
 6. **Google Play only: allow time for testing.** A new personal Play developer account has to run a closed
    test with real testers before it may publish to everyone (at least 12 testers for 14 days when this was
    written, 14 November 2026). Step 2 of SHIPPING-ANDROID.md has the details; start that clock early.
+7. **Publish the website** ("Publishing the website" above) and open the privacy policy and the support page in
+   a browser. Both stores and AdMob ask for those addresses, and the game links to them.
 
 ## What has and has not been verified
 
@@ -144,7 +184,9 @@ of SHIPPING-ANDROID.md are the checklists for that first run on a phone.
 ## Changing things
 
 - **Name, web address, hint economy:** `docs/first-come/js/config.js`. The name also appears in
-  `app.config.json`, `index.html`, `manifest.webmanifest`, the two help pages and `store/listing.md`.
+  `app.config.json`, `index.html`, `manifest.webmanifest`, the two help pages and `store/listing.md`, and it is
+  drawn into the Google Play feature graphic by `feature()` in `scripts/make-art.mjs` (then `npm run art` and
+  `npm run screenshots`).
 - **Advert pacing:** `AD_RULES` in `docs/first-come/js/ads.js`.
 - **Difficulty curve and new kinds of block:** `campaignRecipe()` and `dailyRecipe()` in
   `docs/first-come/js/gen.js`, then `npm run levels` and `npm test`. Changing the generator changes the shipped

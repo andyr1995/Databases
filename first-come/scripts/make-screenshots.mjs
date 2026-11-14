@@ -6,8 +6,8 @@
 // Writes two sets of five PNGs:
 //   store/screenshots/          1320 x 2868, the 6.9-inch iPhone size App Store Connect asks for
 //   store/screenshots-android/  1080 x 1920, for Google Play (which refuses anything taller than 2:1)
-// Needs Playwright's Chromium (already installed in Claude Code cloud sessions;
-// elsewhere: `npx playwright install chromium`).
+// Needs Playwright and its Chromium (both already there in Claude Code cloud sessions;
+// elsewhere: `npm install --no-save playwright && npx playwright install chromium`).
 import { createRequire } from 'node:module';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';

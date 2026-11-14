@@ -1,5 +1,5 @@
 // End-to-end tests: the real game in a real (headless) browser at phone size.
-// Run with `npm run test:e2e`. Needs Playwright's Chromium.
+// Run with `npm run test:e2e`. Needs Playwright and its Chromium: see "Everyday commands" in README.md.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';

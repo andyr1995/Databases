@@ -26,6 +26,12 @@ How far to trust this guide:
   simulator on a GitHub Mac runner (Xcode 26.6), unsigned, at the first attempt. It has not
   yet been signed, uploaded or run on a device. "What has not been verified" at the end
   lists exactly what is unproven.
+- **The TestFlight workflow can only be started once this work is on `main`.** It was
+  written on a branch, and GitHub offers "Run workflow" only for a workflow whose file is on
+  the repository's default branch, which here is `main`. Until the branch is merged, "iOS
+  TestFlight" is not in the list under Actions at all. So merge before step 10 at the
+  latest: on GitHub, Pull requests > New pull request, choose the branch, Create pull
+  request, Merge pull request. From then on make your changes on `main`.
 - **The app's identity is set but yours to change.** `app.config.json` calls the app
   `First Come` with the bundle id `app.firstcome.puzzle`. The bundle id cannot be changed
   after the first upload, so decide on it in step 3.
@@ -93,6 +99,8 @@ What the configure script sets without asking, and why:
 - **Node.js 22.18 or later** wherever you run `npm run sync`.
 - A real **iPhone** for testing before release. Strongly advised: adverts, the tracking prompt
   and purchases behave differently on a real phone than anywhere else.
+- The **website published**: the privacy policy and support page addresses are asked for in steps 6 and 12.
+  See "Publishing the website" in README.md, and check that both pages open in a browser first.
 
 ---
 
@@ -147,9 +155,12 @@ Two names and one id need deciding. The bundle id is permanent, so take a minute
    never shown to anyone).
 6. Put `appId` and `appName` into `app.config.json`, run `npm run sync`, commit.
 
-### 4. Supply the artwork
+### 4. Check the artwork
 
-Replace the two placeholder files, keeping the file names, then run `npm run sync`:
+`npm run art` has already drawn the icon and the launch image. There is nothing to do here
+unless you want different art. In that case replace these two files, keeping the file names,
+then run `npm run sync` (the Android and Google Play pictures are separate files: step 5 of
+SHIPPING-ANDROID.md):
 
 - `resources/icon-1024.png`: 1024 x 1024 pixels, square corners (iOS rounds them), **no
   transparency**. The script refuses an icon with an alpha channel, because App Store Connect
@@ -438,7 +449,8 @@ without signing. It needs no secrets. A red run means the last change broke the 
 ### ios-testflight.yml: build, sign, upload
 
 Runs only by hand: repository > Actions > "iOS TestFlight" > Run workflow. **It has never
-been run.** It needs four repository secrets (Settings > Secrets and variables > Actions):
+been run.** It is in that list only once this work has been merged into `main` (see "Where
+things stand"). It needs four repository secrets (Settings > Secrets and variables > Actions):
 
 | Secret | What to put in |
 |---|---|
@@ -458,7 +470,7 @@ To get the key:
 4. Encode the file and copy the output into the secret:
    - macOS: `base64 -i AuthKey_XXXXXXXXXX.p8 | pbcopy`
    - Linux: `base64 -w0 AuthKey_XXXXXXXXXX.p8`
-   - Windows PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("AuthKey_XXXXXXXXXX.p8"))`
+   - Windows PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes((Convert-Path AuthKey_XXXXXXXXXX.p8)))`
 5. Keep the `.p8` file somewhere safe and out of the repository. Anyone who has it can act on
    your Apple account. If it leaks, revoke the key in App Store Connect.
 
@@ -551,7 +563,7 @@ to upgrade it when you edit it there. It has not been opened in Xcode yet.
 | `npm run update:skadnetwork` | Refresh the SKAdNetwork list from Google's page. |
 | `npm test` | All tests, including the ones for the scripts above. Runs on Linux, macOS and in CI. |
 | `npm run typecheck` | Type-check the bridge. |
-| `python3 scripts/make-placeholder-art.py` | Recreate the placeholder icon and launch image (needs Pillow). |
+| `npm run art` | Redraw the icons, the launch art and the Play listing graphics. Needs Playwright: see "Everyday commands" in README.md. |
 
 ## What has not been verified
 
