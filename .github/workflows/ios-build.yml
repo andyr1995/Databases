@@ -8,7 +8,7 @@
 # is signed and nothing is uploaded, so it needs no secrets and no Apple account.
 #
 # TEMPLATE. To use it, copy this file to .github/workflows/ios-build.yml and replace two
-# placeholders everywhere they occur (each is used twice below):
+# placeholders everywhere they occur:
 #
 #   first-come   the folder that holds app.config.json, from the top of the repository,
 #                 without a leading or trailing slash
@@ -28,6 +28,10 @@ on:
   push:
     paths:
       - 'first-come/**'
+      # Android-only files do not need a Mac build (the Android build workflow covers them).
+      - '!first-come/android/**'
+      - '!first-come/SHIPPING-ANDROID.md'
+      - '!first-come/ci/android-*.yml'
       - 'docs/first-come/**'
       - '.github/workflows/ios-build.yml'
 

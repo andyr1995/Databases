@@ -1,8 +1,9 @@
 # The iPhone app: from this repository to the App Store
 
-This folder turns the web game into an iPhone app. It holds a Capacitor project (a thin native
+This folder turns the web game into an iPhone app (and an Android app: that half has its own
+guide, [SHIPPING-ANDROID.md](SHIPPING-ANDROID.md)). It holds a Capacitor project (a thin native
 shell that shows the game in a full-screen web view), the bridge that connects the game to
-adverts, purchases and other iPhone features, and the Xcode project in `ios/`.
+adverts, purchases and other phone features, and the Xcode project in `ios/`.
 
 Read "Where things stand" and "The one rule" first. The numbered steps after that go from an
 empty Apple account to a published app, in the order that causes the least waiting.
@@ -45,8 +46,11 @@ After changing either, run this in this folder and commit everything it changes:
 npm run sync
 ```
 
-It rebuilds the bridge, copies the web game into the Xcode project and then runs
-`scripts/configure-ios.mjs`, which writes the settings into the Xcode project. Do not edit
+It first checks that `app.config.json` suits both iPhone and Android, and stops before writing
+anything if it does not (`npm run check:config` runs that check alone). Then it rebuilds the
+bridge, copies the web game into the Xcode project and the Android project, and runs
+`scripts/configure-ios.mjs`, which writes the settings into the Xcode project (and
+`scripts/configure-android.mjs`, which does the same for Android). Do not edit
 `ios/App/App/Info.plist`, the build settings or the icon files by hand, in Xcode or otherwise:
 the next `npm run sync` puts back what `app.config.json` says. (The one thing it leaves alone
 is the signing team picked in Xcode.)
@@ -128,7 +132,10 @@ also been called "Agreements, Tax, and Banking"):
 Two names and one id need deciding. The bundle id is permanent, so take a minute over it.
 
 1. **Bundle id** (`appId`): reverse-domain style, lower case, for example
-   `com.yourname.firstcome`. Letters, digits, hyphens and dots only.
+   `com.yourname.firstcome`. Apple allows letters, digits, hyphens and dots. Android does not
+   allow hyphens in its package name, and by default the same id is used for both stores: so
+   use letters, digits and dots only, or give Android its own id with `"androidAppId"` (step 3
+   of SHIPPING-ANDROID.md).
 2. **Home-screen name** (`appName`): for example `First Come`.
 3. **App Store name**: up to 30 characters, and it must not already be taken on the App Store.
    You only find out by trying, when you create the app record (point 5 below).
@@ -537,7 +544,8 @@ to upgrade it when you edit it there. It has not been opened in Xcode yet.
 
 | Command | What it does |
 |---|---|
-| `npm run sync` | Bridge build, `cap sync ios`, then `scripts/configure-ios.mjs`. The command to run after any change. |
+| `npm run sync` | Config check, bridge build, `cap sync` for iPhone and Android, then `scripts/configure-ios.mjs` and `scripts/configure-android.mjs`. The command to run after any change. |
+| `npm run check:config` | Only the first part: is `app.config.json` fit for both iPhone and Android? Changes nothing. |
 | `npm run configure:ios` | Only the last part: apply `app.config.json` and `resources/` to `ios/`. |
 | `npm run configure:ios -- --check` | Changes nothing; fails if `ios/` is out of step with `app.config.json`. |
 | `npm run update:skadnetwork` | Refresh the SKAdNetwork list from Google's page. |

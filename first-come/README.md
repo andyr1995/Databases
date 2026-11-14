@@ -2,14 +2,20 @@
 
 *First come, first served. The order is the puzzle.*
 
-An original logic puzzle for iPhone (and the web). Tap a block and its colour runs out along every arrow,
+An original logic puzzle for iPhone, Android and the web. Tap a block and its colour runs out along every arrow,
 claiming each free square until something is in the way. A claimed square stays claimed, so whoever goes later
 gets cut short. Every block goes once; fill every square. The whole puzzle is the order.
 
 - **Play it in a browser:** <https://andyr1995.github.io/Databases/first-come/> (live once this is merged to
   `main`; GitHub Pages publishes the `docs/` folder).
-- **Ship it to the App Store:** follow [SHIPPING.md](SHIPPING.md). Store text is in
-  [store/listing.md](store/listing.md) and screenshots are in `store/screenshots/`.
+- **Ship it to the App Store:** follow [SHIPPING.md](SHIPPING.md).
+- **Ship it to Google Play:** follow [SHIPPING-ANDROID.md](SHIPPING-ANDROID.md).
+- **Try it on an Android phone today:** every push builds an installable test app. On GitHub open
+  Actions > "Android build" > the latest run > Artifacts, and download the `.apk` on the phone
+  (step 11 of SHIPPING-ANDROID.md). It shows Google's test adverts and cannot take real payments.
+- Store text for both stores is in [store/listing.md](store/listing.md); screenshots are in
+  `store/screenshots/` (App Store) and `store/screenshots-android/` (Google Play); the Play icon and
+  feature graphic are in `resources/play/`.
 
 ## What is in the box
 
@@ -17,16 +23,18 @@ Paths that start with `docs/` are from the top of the repository; the rest are i
 
 | Path | What it is |
 | --- | --- |
-| `docs/first-come/` | **The game.** A static site with no build step: `index.html`, `css/`, `js/`. Also the privacy policy and support page that the App Store asks for. |
+| `docs/first-come/` | **The game.** A static site with no build step: `index.html`, `css/`, `js/`. Also the privacy policy and support page that both stores ask for. |
 | `docs/first-come/js/levels-data.js` | 2,000 campaign levels and 2,200 Daily puzzles (to November 2032), generated ahead of time and each proven solvable. Beyond those, the game builds the very same levels on the device, in the background. |
-| `docs/first-come/vendor/native-bridge.js` | Generated. The AdMob / in-app purchase / haptics code the game loads when it runs inside the iPhone app. Source: `src/bridge/`. |
-| `app.config.json` | **The one file to edit before release:** bundle id, app name, version, AdMob ids, the Remove Ads product id. |
-| `src/bridge/` | TypeScript source of the native bridge (adverts, consent, purchases, share sheet, haptics, storage). |
+| `docs/first-come/vendor/native-bridge.js` | Generated. The AdMob / in-app purchase / haptics / Back-button code the game loads when it runs inside the iPhone or Android app. Source: `src/bridge/`. |
+| `app.config.json` | **The one file to edit before release:** app id (iPhone bundle id and Android package name), app name, version, AdMob ids for each platform, the Remove Ads product id. |
+| `src/bridge/` | TypeScript source of the native bridge (adverts, consent, purchases, share sheet, haptics, storage, Android Back). |
 | `ios/` | The Xcode project (Capacitor 8, Swift Package Manager). Regenerated settings come from `scripts/configure-ios.mjs`; do not edit them by hand. |
-| `scripts/` | Tools: build the bridge, configure the Xcode project, build the level tables, draw the icon, take the screenshots. |
+| `android/` | The Android project (Capacitor 8, Gradle). Regenerated settings come from `scripts/configure-android.mjs`; do not edit them by hand. The copied web game inside it is not committed: run `npm run sync` before any Gradle build. |
+| `scripts/` | Tools: check the config, build the bridge, configure the Xcode and Android projects, build the level tables, draw the icons, take the screenshots. |
 | `test/`, `e2e/` | Automated tests. |
-| `ci/` | Templates of the two GitHub Actions workflows (build on a Mac in the cloud; upload to TestFlight). They are installed, filled in, in `.github/workflows/` at the top of the repository. |
-| `store/` | App Store text and screenshots. |
+| `ci/` | Templates of the four GitHub Actions workflows (iPhone: build on a Mac, upload to TestFlight; Android: build an installable test app, build the signed bundle for Google Play). They are installed, filled in, in `.github/workflows/` at the top of the repository. |
+| `resources/` | The app icon and launch image, Android launcher icons, and the Google Play icon and feature graphic. All drawn by `npm run art`. |
+| `store/` | Text and screenshots for both stores. |
 
 ## Everyday commands
 
@@ -37,11 +45,16 @@ npm install            # once
 npm test               # bridge tests + game logic tests (every shipped level is solved by the solver)
 npm run test:e2e       # plays the real game in a headless phone-sized browser
 npm run typecheck      # type-checks the native bridge against the real plugin typings
-npm run sync           # rebuilds the bridge, copies the game into the Xcode project, applies app.config.json
+npm run sync           # checks app.config.json, rebuilds the bridge, copies the game into the Xcode and
+                       # Android projects and applies app.config.json to both
 npm run levels         # regenerates js/levels-data.js (deterministic: same output every time)
-npm run art            # redraws the app icon, web icons and launch image
-npm run screenshots    # retakes the App Store screenshots
+npm run art            # redraws the app icons, web icons, launch image and Google Play art
+npm run screenshots    # retakes the App Store and Google Play screenshots
 ```
+
+To build the Android app on your own computer (needs Java 21 and the Android SDK; Android Studio
+brings both): `npm run sync`, then in `android/` run `./gradlew assembleDebug`. The app is then at
+`android/app/build/outputs/apk/debug/app-debug.apk`. Or open `android/` in Android Studio and press Run.
 
 To try the game locally, serve the web folder with any static server (from the top of the
 repository: `npx serve docs/first-come`) and open it on your phone or in a narrow browser window.
@@ -54,7 +67,8 @@ Handy addresses while testing:
 
 ## How the money side works
 
-All of it is in `docs/first-come/js/ads.js` (the rules) and `src/bridge/` (the real AdMob and StoreKit calls).
+All of it is in `docs/first-come/js/ads.js` (the rules) and `src/bridge/` (the real AdMob, StoreKit and
+Google Play Billing calls). The rules are the same on iPhone and Android.
 
 - **Banner** on the play screen only. Never on the home screen, never on the Daily.
 - **Full-screen advert** only between campaign levels, after the player taps *Next level*: never before 12
@@ -69,21 +83,28 @@ All of it is in `docs/first-come/js/ads.js` (the rules) and `src/bridge/` (the r
   10 hints. Rewarded videos stay available.
 - **The web version has no adverts at all**; there, rewards are simply given.
 
-Until you put your own AdMob ids in `app.config.json` and set `"testing": false`, the app shows Google's test
-adverts, which earn nothing. That is deliberate: clicking your own live adverts gets an AdMob account banned.
+Until you put your own AdMob ids in `app.config.json` (the iPhone app and the Android app each need their
+own set) and set `"testing": false`, the app shows Google's test adverts, which earn nothing. That is
+deliberate: clicking your own live adverts gets an AdMob account banned.
 
 ## Before you submit: things only you can do
 
-1. **Choose the bundle id** in `app.config.json` (`appId`). It is `app.firstcome.puzzle` now; it cannot be
-   changed after the first upload.
-2. **Put your own AdMob ids** in `app.config.json` and set `"testing": false` for the release build.
+1. **Choose the app id** in `app.config.json` (`appId`). It is `app.firstcome.puzzle` now. It is the iPhone
+   bundle id and the Android package name, and it cannot be changed in either store after the first upload.
+   Use letters, digits and dots only (Android refuses hyphens).
+2. **Put your own AdMob ids** in `app.config.json`, under `admob.ios` and `admob.android`, and set
+   `"testing": false` for the release builds.
 3. **Add your name and a contact e-mail address** to `docs/first-come/support.html` and to the last section of
    `docs/first-come/privacy.html`. Today the only contact route is a public GitHub issue, which needs an account
-   and is visible to everyone. Apple asks for an easy way to reach you, and UK/EU privacy rules expect the
-   policy to say who is responsible and how to contact them privately.
+   and is visible to everyone. Apple asks for an easy way to reach you, Google Play requires a contact e-mail
+   address and shows it on the listing, and UK/EU privacy rules expect the policy to say who is responsible
+   and how to contact them privately.
 4. **Read the privacy policy** before publishing it. It describes what the app does today; it is not legal advice.
 5. **Check the name** `First Come` in App Store Connect (step 3 of SHIPPING.md). The earlier working title,
    Dibs, was dropped because a colour-capture puzzle game already uses it.
+6. **Google Play only: allow time for testing.** A new personal Play developer account has to run a closed
+   test with real testers before it may publish to everyone (at least 12 testers for 14 days when this was
+   written, 14 November 2026). Step 2 of SHIPPING-ANDROID.md has the details; start that clock early.
 
 ## What has and has not been verified
 
@@ -93,18 +114,31 @@ Verified on Linux, automatically, on every `npm test` / `npm run test:e2e`:
 - All 4,200 shipped levels parse, fit a phone screen and can be solved, none shows a misleading arrow or
   number, and the tables are exactly what the generator produces.
 - Sessions, slips, hearts, streaks, saved games, the share text, and the advert timing rules.
-- The whole game played in a headless Chromium at phone sizes, including the simulated advert and purchase flows.
-- The native bridge's logic, with fake plugins standing in for AdMob and StoreKit.
+- The whole game played in a headless Chromium at phone sizes, including the simulated advert and purchase
+  flows and Android's Back button.
+- The native bridge's logic on both platforms, with fake plugins standing in for AdMob, StoreKit and Google
+  Play Billing. The Android fakes are written from the plugins' own Java source, and a test fails if that
+  source changes at a place the bridge relies on.
+- That `app.config.json`, the Xcode project and the Android project agree.
 
 Verified on a Mac, by the `iOS build` workflow on GitHub (it runs on every push that touches the game or this
-folder):
+folder, apart from Android-only files):
 
 - The Xcode project resolves its Swift packages and the app compiles for the iPhone simulator (first run:
   13 November 2026, Xcode 26.6, unsigned).
 
-**Not verified, because it needs an Apple developer account, an AdMob account and a real iPhone:** signing and
-the TestFlight upload, real AdMob adverts, the consent and tracking prompts, real purchases, haptics and the
-share sheet on a device. Step 10 of SHIPPING.md is the checklist for that first run on a phone.
+Verified for Android, by the `Android build` workflow on GitHub (every push that touches the game or this
+folder) and by the same Gradle build on a Linux machine:
+
+- The Android project downloads its libraries and builds a debug APK and a release app bundle (unsigned).
+  Both are then opened and checked: package name, version, name, permissions, the AdMob app id, portrait,
+  and that the game and the freshly built bridge are inside.
+
+**Not verified, because it needs developer accounts, an AdMob account and real phones:** the app running on
+any device (iPhone or Android), signing and the TestFlight and Google Play uploads, real AdMob adverts, the
+consent and tracking prompts, real purchases, haptics, the share sheet, and on Android the launch screen, the
+edges of the screen around the system bars, and the Back button on a phone. Step 10 of SHIPPING.md and step 15
+of SHIPPING-ANDROID.md are the checklists for that first run on a phone.
 
 ## Changing things
 

@@ -155,7 +155,8 @@ recreate all of these.
 
 ## In-app product
 
-Play Console > Monetize > Products > In-app products (a one-time product, not a subscription).
+Play Console > your app > Monetize with Play > Products > In-app products (Google now calls these one-time products; not a
+subscription). Step 13 of SHIPPING-ANDROID.md walks through it.
 
 - Product ID: `remove_ads` (must match `iap.removeAdsProductId` in `app.config.json`; it cannot be changed or
   reused once created)

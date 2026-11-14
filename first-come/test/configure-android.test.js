@@ -46,8 +46,8 @@ const COLOURS = Object.freeze({ iconBackground: '#112233', splashBackground: '#4
 const ANDROID_NS = 'http://schemas.android.com/apk/res/android';
 const TOOLS_NS = 'http://schemas.android.com/tools';
 const ADMOB_KEY = 'com.google.android.gms.ads.APPLICATION_ID';
-const DENSITIES = { mdpi: [48, 108], hdpi: [72, 162], xhdpi: [96, 216], xxhdpi: [144, 324], xxxhdpi: [192, 432] };
-const ICON_NAMES = ['ic_launcher.png', 'ic_launcher_round.png', 'ic_launcher_foreground.png'];
+const DENSITIES = { mdpi: [48, 108, 288], hdpi: [72, 162, 432], xhdpi: [96, 216, 576], xxhdpi: [144, 324, 864], xxxhdpi: [192, 432, 1152] };
+const ICON_NAMES = ['ic_launcher.png', 'ic_launcher_round.png', 'ic_launcher_foreground.png', 'ic_splash.png'];
 const TEMPLATE_ART = [
   'drawable/splash.png',
   ...['land', 'port'].flatMap((way) => Object.keys(DENSITIES).map((density) => `drawable-${way}-${density}/splash.png`)),
@@ -161,7 +161,7 @@ test('the Android project in android/ is in step with app.config.json and resour
     [],
     'These files are out of date. Run `npm run sync` and commit the result (never edit them by hand).',
   );
-  assert.ok(result.unchanged.length >= 27, 'manifest, build files, strings, styles, colours, drawings, MainActivity and fifteen icons');
+  assert.ok(result.unchanged.length >= 32, 'manifest, build files, strings, styles, colours, drawings, MainActivity and twenty icons');
 });
 
 // --- from a freshly added platform ------------------------------------------------------------
@@ -286,7 +286,7 @@ test('launch screen and system bars: the themes, the colours and the drawings', 
     parent: 'Theme.SplashScreen',
     items: [
       ['windowSplashScreenBackground', '@color/splash_background', undefined],
-      ['windowSplashScreenAnimatedIcon', '@mipmap/ic_launcher_foreground', undefined],
+      ['windowSplashScreenAnimatedIcon', '@mipmap/ic_splash', undefined],
       ['postSplashScreenTheme', '@style/AppTheme.NoActionBar', undefined],
       ['android:windowLightStatusBar', 'false', undefined],
       ['android:windowLightNavigationBar', 'false', '27'],
@@ -316,7 +316,7 @@ test('launch screen and system bars: the themes, the colours and the drawings', 
   const layers = elements(xml(inRes(dir, 'drawable', 'splash.xml')).documentElement, 'item');
   assert.deepEqual(
     layers.map((layer) => layer.getAttributeNS(ANDROID_NS, 'drawable')),
-    ['@color/splash_background', '@mipmap/ic_launcher_foreground'],
+    ['@color/splash_background', '@mipmap/ic_splash'],
   );
   assert.equal(layers[1].getAttributeNS(ANDROID_NS, 'gravity'), 'center');
 });
@@ -786,6 +786,14 @@ test('art that would give a broken icon stops the run before anything is written
   assert.throws(() => configureAndroid({ root: dir }), /only some of the launcher icons\. Missing: mipmap-hdpi\/ic_launcher_foreground\.png/);
   writeFileSync(resource('mipmap-hdpi', 'ic_launcher_foreground.png'), original);
 
+  // The launch image is checked the same way.
+  const launchImage = readFileSync(resource('mipmap-xhdpi', 'ic_splash.png'));
+  writeFileSync(resource('mipmap-xhdpi', 'ic_splash.png'), pngHeader(576, 576, 2));
+  assert.throws(() => configureAndroid({ root: dir }), /mipmap-xhdpi\/ic_splash\.png has no transparency\. It is the picture on the launch screen/);
+  writeFileSync(resource('mipmap-xhdpi', 'ic_splash.png'), pngHeader(216, 216, 6));
+  assert.throws(() => configureAndroid({ root: dir }), /is 216 x 216; it must be 576 x 576/);
+  writeFileSync(resource('mipmap-xhdpi', 'ic_splash.png'), launchImage);
+
   writeFileSync(resource('colors.json'), JSON.stringify({ ...COLOURS, statusBar: 'navy' }));
   assert.throws(() => configureAndroid({ root: dir }), /"statusBar" must be a colour written as #RRGGBB/);
   rmSync(resource('colors.json'));
@@ -972,10 +980,10 @@ test('the template archive these tests unpack is the one `cap add android` uses,
 });
 
 test('the launcher icons in resources/android have the sizes Android expects', () => {
-  for (const [density, [legacy, foreground]] of Object.entries(DENSITIES)) {
+  for (const [density, [legacy, foreground, launch]] of Object.entries(DENSITIES)) {
     for (const name of ICON_NAMES) {
       const png = readFileSync(path.join(root, 'resources', 'android', `mipmap-${density}`, name));
-      const size = name === 'ic_launcher_foreground.png' ? foreground : legacy;
+      const size = { 'ic_launcher_foreground.png': foreground, 'ic_splash.png': launch }[name] ?? legacy;
       assert.deepEqual([png.readUInt32BE(16), png.readUInt32BE(20)], [size, size], `mipmap-${density}/${name}`);
     }
   }

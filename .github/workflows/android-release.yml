@@ -1,0 +1,290 @@
+# Installed from first-come/ci/android-release.yml with the placeholders filled in.
+# Edit the template there and copy it here again, or edit this file directly.
+# Android release build: a signed app bundle for Google Play
+#
+# Started by hand from the repository's Actions tab ("Run workflow"). It builds the app the
+# way Google Play wants it, as an app bundle (.aab), and signs it with your upload key. The
+# signed bundle is kept with the run for 30 days: open the run, download it under "Artifacts",
+# and upload it to Play Console yourself (a testing track or Production > Create new release).
+# This workflow sends nothing to Google.
+#
+# TEMPLATE. To use it, copy this file to .github/workflows/android-release.yml and replace
+# first-come (one place) with the folder that holds app.config.json, from the top of the
+# repository, without a leading or trailing slash.
+#
+# Repository secrets it needs (Settings > Secrets and variables > Actions):
+#
+#   ANDROID_KEYSTORE_BASE64     The upload keystore file (for example upload-keystore.jks),
+#                               base64-encoded
+#   ANDROID_KEYSTORE_PASSWORD   The keystore's password
+#   ANDROID_KEY_ALIAS           The name of the key inside the keystore (for example: upload)
+#   ANDROID_KEY_PASSWORD        The key's password. For a keystore made the way
+#                               SHIPPING-ANDROID.md describes it is the keystore's password again.
+#
+# The keystore is written to a file only for this job and deleted in the last step. The build
+# reads the four values from environment variables (android/app/release.gradle); nothing
+# secret is in the repository.
+#
+# The version code of every upload to Google Play must be higher than the last one. It is
+# taken from this workflow's run counter, which goes up by one on every run.
+#
+# UNTESTED: this workflow has never run. Its signing, checking and naming steps were tried by
+# hand on a Linux machine on 14 November 2026 with a throw-away key, and they worked, but not
+# on GitHub and not with a bundle that Google Play then accepted. Expect to fix something the
+# first time; SHIPPING-ANDROID.md lists the likely causes.
+
+name: Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_code:
+        description: Version code. Leave empty to use this workflow's run number.
+        required: false
+        type: string
+
+env:
+  APP_DIR: first-come
+
+permissions:
+  contents: read
+
+# Never two release builds at once.
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Signed app bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION_CODE: ${{ inputs.version_code || github.run_number }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+    steps:
+      - name: Check the inputs
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$ANDROID_KEYSTORE_BASE64" ] || missing="$missing ANDROID_KEYSTORE_BASE64"
+          [ -n "$ANDROID_KEYSTORE_PASSWORD" ] || missing="$missing ANDROID_KEYSTORE_PASSWORD"
+          [ -n "$ANDROID_KEY_ALIAS" ] || missing="$missing ANDROID_KEY_ALIAS"
+          [ -n "$ANDROID_KEY_PASSWORD" ] || missing="$missing ANDROID_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::These repository secrets are not set:$missing"
+            exit 1
+          fi
+          case "$VERSION_CODE" in
+            '' | *[!0-9]* | 0* | ???????????*)
+              echo "::error::The version code must be a whole number, 1 or more, without leading zeros. Got: $VERSION_CODE"
+              exit 1
+              ;;
+          esac
+          if [ "$VERSION_CODE" -gt 2100000000 ]; then
+            echo "::error::The version code must not be greater than 2100000000, the largest Google Play accepts. Got: $VERSION_CODE"
+            exit 1
+          fi
+
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      # Before anything is installed or built: the two mistakes that would give a bundle Google
+      # Play accepts and that is still wrong. (Sample ids all begin with Google's demo
+      # publisher number; adverts requested with them are demo adverts and earn nothing.)
+      - name: Check app.config.json
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          node -e '
+            const config = require("./app.config.json");
+            const packageName = config.androidAppId || config.appId;
+            if (packageName.startsWith("com.example.")) {
+              console.log(`::error::app.config.json still has the placeholder package name "${packageName}". Put in the package name you created the app with in Play Console, run npm run sync and commit.`);
+              process.exit(1);
+            }
+            const admob = config.admob || {};
+            if (admob.testing) {
+              console.log("::warning::admob.testing is true: this build only shows Google demo adverts and earns nothing. Fine for testers; do not send it to production.");
+            } else {
+              const ids = admob.android || {};
+              const sample = ["appId", "banner", "interstitial", "rewarded"].filter((key) => typeof ids[key] !== "string" || ids[key].startsWith("ca-app-pub-3940256099942544"));
+              if (sample.length > 0) {
+                console.log(`::error::admob.testing is false, but under admob.android these are still missing or Google sample ids: ${sample.join(", ")}. This bundle would show demo adverts only and earn nothing. Put in the ids of your own AdMob app (SHIPPING-ANDROID.md, step 7), run npm run sync and commit. For a build that is only for testers, set admob.testing to true instead.`);
+                process.exit(1);
+              }
+            }
+            console.log(`${config.appName} (${packageName}) ${config.version}, version code ${process.env.VERSION_CODE}`);
+          '
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      # Capacitor 8 compiles its Android code for Java 21. The Android SDK is already on
+      # GitHub's Linux machines.
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install JavaScript packages
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Typecheck and test
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Copy the web game into the Android project
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run sync
+
+      - name: Restore downloaded Android libraries and Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: gradle-${{ runner.os }}-${{ hashFiles(format('{0}/package-lock.json', env.APP_DIR), format('{0}/android/**/*.gradle', env.APP_DIR), format('{0}/android/gradle/wrapper/gradle-wrapper.properties', env.APP_DIR)) }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # The keystore is written to a file only for this job and deleted in the last step. It is
+      # opened here once with the password and the key name, so that a wrong secret is reported
+      # in plain words now and not as a Gradle error later.
+      - name: Write the upload keystore to a file
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/keystore"
+          keystore="$RUNNER_TEMP/keystore/upload-keystore.jks"
+          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore" 2>/dev/null || [ ! -s "$keystore" ]; then
+            rm -f "$keystore"
+            echo "::error::ANDROID_KEYSTORE_BASE64 does not decode to a file. The secret must be the whole keystore file, base64-encoded: base64 -w0 upload-keystore.jks"
+            exit 1
+          fi
+          if ! keytool -list -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD > /dev/null 2>&1; then
+            rm -f "$keystore"
+            echo "::error::The keystore in ANDROID_KEYSTORE_BASE64 cannot be opened with ANDROID_KEYSTORE_PASSWORD. Either the password is wrong or the secret is not a keystore file."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$keystore" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" > /dev/null 2>&1; then
+            rm -f "$keystore"
+            echo "::error::The keystore has no key called \"$ANDROID_KEY_ALIAS\" (the ANDROID_KEY_ALIAS secret). List the names with: keytool -list -keystore upload-keystore.jks"
+            exit 1
+          fi
+          echo "ANDROID_KEYSTORE_FILE=$keystore" >> "$GITHUB_ENV"
+
+      # android/app/release.gradle picks up ANDROID_KEYSTORE_FILE (set by the step above), the
+      # three values below and ANDROID_VERSION_CODE, which replaces the version code that
+      # app.config.json gives.
+      - name: Build and sign the release bundle
+        working-directory: ${{ env.APP_DIR }}/android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_VERSION_CODE: ${{ env.VERSION_CODE }}
+        run: sh ./gradlew --no-daemon bundleRelease
+
+      - name: Check the bundle
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          aab="$APP_DIR/android/app/build/outputs/bundle/release/app-release.aab"
+          need() { if ! "$@"; then echo "::error::The bundle failed this check: $*"; exit 1; fi; }
+          need test -f "$aab"
+
+          tools="$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/ | sort -V | tail -n 1)"
+          need test -x "${tools}aapt2"
+          config() { node -p "const c = require('./$APP_DIR/app.config.json'); $1"; }
+          # The Android package name: "androidAppId" where app.config.json has one, else "appId".
+          package_name="$(config 'c.androidAppId || c.appId')"
+
+          # Signed, and by the key in the keystore.
+          signature="$(jarsigner -verify "$aab" 2>&1 || true)"
+          if ! grep -q 'jar verified' <<<"$signature"; then
+            echo "::error::The bundle is not signed. jarsigner says: $(tr '\n' ' ' <<<"$signature")"
+            exit 1
+          fi
+          fingerprint() { sed -n 's/^.*SHA256: *//p' | head -n 1; }
+          signed_by="$(keytool -printcert -jarfile "$aab" 2>/dev/null | fingerprint)"
+          key_is="$(keytool -list -v -keystore "$ANDROID_KEYSTORE_FILE" -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" 2>/dev/null | fingerprint)"
+          need test -n "$signed_by"
+          need test "$signed_by" = "$key_is"
+
+          # The app bundle keeps its manifest in another format than an APK. Repacked like this,
+          # its main part can be read with aapt2.
+          mkdir -p "$RUNNER_TEMP/bundle"
+          unzip -q -o "$aab" 'base/manifest/AndroidManifest.xml' 'base/resources.pb' 'base/res/*' -d "$RUNNER_TEMP/bundle"
+          mv "$RUNNER_TEMP/bundle/base/manifest/AndroidManifest.xml" "$RUNNER_TEMP/bundle/base/AndroidManifest.xml"
+          (cd "$RUNNER_TEMP/bundle/base" && zip -q -r ../base.apk AndroidManifest.xml resources.pb res)
+          badging="$("${tools}aapt2" dump badging "$RUNNER_TEMP/bundle/base.apk")"
+          manifest="$("${tools}aapt2" dump xmltree "$RUNNER_TEMP/bundle/base.apk" --file AndroidManifest.xml)"
+          files="$(unzip -Z1 "$aab")"
+          says() { grep -qF -- "$1" <<<"$badging"; }
+          manifest_says() { grep -qF -- "$1" <<<"$manifest"; }
+          holds() { grep -qxF -- "$1" <<<"$files"; }
+
+          need says "package: name='$package_name' versionCode='$VERSION_CODE' versionName='$(config c.version)'"
+          need says "application-label:'$(config c.appName)'"
+          if says "application-debuggable"; then echo "::error::The release bundle is debuggable."; exit 1; fi
+          need says "uses-permission: name='com.google.android.gms.permission.AD_ID'"
+          need says "uses-permission: name='com.android.vending.BILLING'"
+          need manifest_says '"com.google.android.gms.ads.APPLICATION_ID"'
+          need manifest_says "=\"$(config c.admob.android.appId)\""
+          need holds base/assets/public/index.html
+          need holds base/assets/public/vendor/native-bridge.js
+          native="$(grep -c '\.so$' <<<"$files" || true)"
+          if [ "$native" -gt 0 ]; then
+            echo "::warning::The app now contains $native native libraries (.so files). Check that each supports 16 KB memory pages; see SHIPPING-ANDROID.md."
+          fi
+
+          mkdir -p "$RUNNER_TEMP/release"
+          named="$RUNNER_TEMP/release/$package_name-$(config c.version)-$VERSION_CODE.aab"
+          cp "$aab" "$named"
+          echo "RELEASE_BUNDLE=$named" >> "$GITHUB_ENV"
+          {
+            echo "### Signed app bundle for Google Play"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Name | $(config c.appName) |"
+            echo "| Package name | $package_name |"
+            echo "| Version (code) | $(config c.version) ($VERSION_CODE) |"
+            echo "| AdMob app id | $(config c.admob.android.appId) |"
+            echo "| Demo adverts only | $(config c.admob.testing) |"
+            echo "| Targets Android API | $(sed -n "s/^targetSdkVersion:'\(.*\)'/\1/p" <<<"$badging") |"
+            echo "| Native libraries | $native |"
+            echo "| Signed with the key whose SHA-256 fingerprint is | $signed_by |"
+            echo "| File | $(basename "$named"), $(du -h "$aab" | cut -f1) |"
+            echo ""
+            echo "The fingerprint should be the one Play Console shows under \"Upload key certificate\" on its"
+            echo "Play app signing page (Protected with Play > Play Store protection > Manage Play app signing,"
+            echo "as Google's help page gave the path on 14 November 2026; or search Play Console for"
+            echo "\"Play app signing\"). Download the bundle under Artifacts and upload it to a release in"
+            echo "Play Console."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Uploaded as it is, not inside a zip file: Play Console takes the .aab file itself.
+      - name: Keep the signed bundle with this run
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.RELEASE_BUNDLE }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Delete the keystore file
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keystore"

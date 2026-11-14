@@ -14,6 +14,7 @@ import { createRequire } from 'node:module';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { crc32, deflateSync, inflateSync } from 'node:zlib';
 
 const { chromium } = createRequire(import.meta.url)('playwright');
 const here = dirname(fileURLToPath(import.meta.url));
@@ -99,12 +100,73 @@ function feature(w, h) {
   );
 }
 
+/** Empty margin around the emblem on Android's adaptive-icon layer and launch image, as a fraction of the canvas. */
+const EMBLEM_INSET = 0.275;
 const android = join(nativeDir, 'android');
 const play = join(nativeDir, 'play');
-/** Android screen densities: launcher icons are 48dp, adaptive layers 108dp. */
+/** Android screen densities: launcher icons are 48dp, adaptive layers 108dp, the launch image 288dp. */
 const DENSITIES = { mdpi: 1, hdpi: 1.5, xhdpi: 2, xxhdpi: 3, xxxhdpi: 4 };
 
-// [file, svg, width, height, transparent background?]
+/**
+ * Rewrites a PNG without an alpha channel as one with it (every pixel opaque). Chromium leaves
+ * the channel out when nothing is transparent, and Google Play's icon is specified with it.
+ * @param {Buffer} png  an 8-bit RGB or RGBA PNG, not interlaced
+ */
+function withAlpha(png) {
+  const chunks = [];
+  for (let at = 8; at < png.length; ) {
+    const length = png.readUInt32BE(at);
+    chunks.push({ type: png.toString('latin1', at + 4, at + 8), data: png.subarray(at + 8, at + 8 + length) });
+    at += length + 12;
+  }
+  const header = chunks.find((chunk) => chunk.type === 'IHDR').data;
+  const [width, height, depth, colourType, interlace] = [header.readUInt32BE(0), header.readUInt32BE(4), header[8], header[9], header[12]];
+  if (colourType === 6) return png;
+  if (depth !== 8 || colourType !== 2 || interlace !== 0) throw new Error('withAlpha: expected an 8-bit RGB PNG');
+  const packed = inflateSync(Buffer.concat(chunks.filter((chunk) => chunk.type === 'IDAT').map((chunk) => chunk.data)));
+  const stride = width * 3;
+  const out = Buffer.alloc(height * (1 + width * 4));
+  let above = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = packed[y * (stride + 1)];
+    const row = Buffer.from(packed.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    // Undo the PNG row filter (0 none, 1 left, 2 up, 3 average, 4 Paeth).
+    for (let i = 0; i < stride; i++) {
+      const left = i >= 3 ? row[i - 3] : 0;
+      const up = above[i];
+      const upLeft = i >= 3 ? above[i - 3] : 0;
+      let predicted = 0;
+      if (filter === 1) predicted = left;
+      else if (filter === 2) predicted = up;
+      else if (filter === 3) predicted = (left + up) >> 1;
+      else if (filter === 4) {
+        const p = left + up - upLeft;
+        const [a, b, c] = [Math.abs(p - left), Math.abs(p - up), Math.abs(p - upLeft)];
+        predicted = a <= b && a <= c ? left : b <= c ? up : upLeft;
+      }
+      row[i] = (row[i] + predicted) & 255;
+    }
+    const start = y * (1 + width * 4) + 1;
+    for (let x = 0; x < width; x++) {
+      row.copy(out, start + x * 4, x * 3, x * 3 + 3);
+      out[start + x * 4 + 3] = 255;
+    }
+    above = row;
+  }
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const framed = Buffer.alloc(body.length + 8);
+    framed.writeUInt32BE(data.length, 0);
+    body.copy(framed, 4);
+    framed.writeUInt32BE(crc32(body) >>> 0, body.length + 4);
+    return framed;
+  };
+  const newHeader = Buffer.from(header);
+  newHeader[9] = 6;
+  return Buffer.concat([png.subarray(0, 8), chunk('IHDR', newHeader), chunk('IDAT', deflateSync(out, { level: 9 })), chunk('IEND', Buffer.alloc(0))]);
+}
+
+// [file, svg, width, height, transparent background?, 'rgba' to force an alpha channel]
 const jobs = [
   [join(nativeDir, 'icon-1024.png'), art(1024, 0.15), 1024, 1024, false],
   [join(nativeDir, 'splash-2732.png'), art(2732, 0.41), 2732, 2732, false],
@@ -114,30 +176,36 @@ const jobs = [
   [join(webDir, 'icons', 'apple-touch-icon.png'), art(180, 0.15), 180, 180, false],
   [join(webDir, 'icons', 'favicon-48.png'), art(48, 0.1), 48, 48, false],
   // Google Play listing art (not part of the app).
-  [join(play, 'icon-512.png'), art(512, 0.15), 512, 512, false],
+  // Google asks for a 32-bit PNG (with alpha) here; `withAlpha` below sees to that.
+  [join(play, 'icon-512.png'), art(512, 0.15), 512, 512, false, 'rgba'],
   [join(play, 'feature-graphic-1024x500.png'), feature(1024, 500), 1024, 500, false],
 ];
 for (const [name, scale] of Object.entries(DENSITIES)) {
   const dir = join(android, `mipmap-${name}`);
   const icon = Math.round(48 * scale);
   const layer = Math.round(108 * scale);
+  const launch = Math.round(288 * scale);
   jobs.push(
     // Launchers older than Android 8 use these two directly.
     [join(dir, 'ic_launcher.png'), art(icon, 0.15), icon, icon, false],
     [join(dir, 'ic_launcher_round.png'), round(icon), icon, icon, true],
     // Android 8 and later: this layer over a plain background, masked by the launcher.
-    // Only the middle two thirds of the layer is guaranteed to be visible.
-    [join(dir, 'ic_launcher_foreground.png'), foreground(layer, 0.27), layer, layer, true],
+    // Only the middle 66dp of the layer is guaranteed to be visible, so the emblem stays inside it.
+    [join(dir, 'ic_launcher_foreground.png'), foreground(layer, EMBLEM_INSET), layer, layer, true],
+    // The picture on Android's launch screen: the same drawing at its own, larger size, so
+    // that it is sharp. Android shows a circle two thirds of the canvas across.
+    [join(dir, 'ic_splash.png'), foreground(launch, EMBLEM_INSET), launch, launch, true],
   );
 }
 
 mkdirSync(join(webDir, 'icons'), { recursive: true });
 const browser = await chromium.launch();
-for (const [file, svg, width, height, transparent] of jobs) {
+for (const [file, svg, width, height, transparent, format] of jobs) {
   mkdirSync(dirname(file), { recursive: true });
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 1 });
   await page.setContent(`<body style="margin:0;background:transparent">${svg}</body>`);
-  writeFileSync(file, await page.screenshot({ type: 'png', omitBackground: transparent, clip: { x: 0, y: 0, width, height } }));
+  const png = await page.screenshot({ type: 'png', omitBackground: transparent, clip: { x: 0, y: 0, width, height } });
+  writeFileSync(file, format === 'rgba' ? withAlpha(png) : png);
   await page.close();
   console.log('wrote', file);
 }

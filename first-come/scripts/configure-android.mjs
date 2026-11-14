@@ -18,7 +18,7 @@
 //   android/app/src/main/res/values/styles.xml    launch screen and dark system bars
 //   android/app/src/main/res/values/colors.xml, values/ic_launcher_background.xml,
 //   drawable/splash.xml, mipmap-anydpi-v26/*.xml   colours and drawings for the above (written whole)
-//   android/app/src/main/res/mipmap-*/*.png   launcher icons from resources/android, if present
+//   android/app/src/main/res/mipmap-*/*.png   launcher icons and launch image from resources/android, if present
 //   android/.gitignore                        signing keys and build leftovers stay out of git
 //
 // It also deletes the placeholder art that Capacitor's template brings along (its own launch
@@ -61,17 +61,30 @@ const TOOLS_NS = 'http://schemas.android.com/tools';
 const ADMOB_APP_ID_KEY = 'com.google.android.gms.ads.APPLICATION_ID';
 
 /**
- * Launcher icon sizes in pixels. `legacy` is the square and the round icon (48 dp); `foreground`
- * is the top layer of the adaptive icon (108 dp, of which Android shows the middle 72 dp or less).
+ * Icon sizes in pixels. `legacy` is the square and the round launcher icon (48 dp); `foreground`
+ * is the top layer of the adaptive icon (108 dp, of which Android shows the middle 72 dp or less);
+ * `launch` is the picture on the launch screen (288 dp, of which Android shows a circle 192 dp across).
  */
 const DENSITIES = {
-  mdpi: { legacy: 48, foreground: 108 },
-  hdpi: { legacy: 72, foreground: 162 },
-  xhdpi: { legacy: 96, foreground: 216 },
-  xxhdpi: { legacy: 144, foreground: 324 },
-  xxxhdpi: { legacy: 192, foreground: 432 },
+  mdpi: { legacy: 48, foreground: 108, launch: 288 },
+  hdpi: { legacy: 72, foreground: 162, launch: 432 },
+  xhdpi: { legacy: 96, foreground: 216, launch: 576 },
+  xxhdpi: { legacy: 144, foreground: 324, launch: 864 },
+  xxxhdpi: { legacy: 192, foreground: 432, launch: 1152 },
 };
-const ICON_FILES = { 'ic_launcher.png': 'legacy', 'ic_launcher_round.png': 'legacy', 'ic_launcher_foreground.png': 'foreground' };
+const ICON_FILES = {
+  'ic_launcher.png': 'legacy',
+  'ic_launcher_round.png': 'legacy',
+  'ic_launcher_foreground.png': 'foreground',
+  'ic_splash.png': 'launch',
+};
+/** Why a picture of this kind must have a transparent background. */
+const NEEDS_TRANSPARENCY = {
+  foreground:
+    'It is the top layer of the adaptive icon: the emblem alone, on a transparent background, so that the background ' +
+    'colour and the shape Android cuts can show around it.',
+  launch: 'It is the picture on the launch screen: the emblem alone, on a transparent background, so that the launch colour shows around it.',
+};
 
 /**
  * Placeholder art from Capacitor's template that this script deletes. The eleven splash.png files
@@ -548,8 +561,9 @@ function buildStrings(existing, config) {
 // capacitor.config.ts (SplashScreen.launchAutoHide and launchShowDuration) and by the game
 // calling platform.appReady().
 //
-// The picture is the launcher icon's foreground layer. Android draws it on a 288 dp square and
-// shows the middle two thirds, a circle 192 dp across, which the emblem fits inside.
+// The picture is ic_splash.png: the emblem of the launcher icon, drawn at the size of the launch
+// screen so that it is sharp. Android draws it on a 288 dp square and shows the middle two
+// thirds, a circle 192 dp across, which the emblem fits inside.
 //
 // The system bars (clock and battery at the top, Back and Home at the bottom). The game is
 // dark, so both bars carry light symbols on something dark, during launch and afterwards. The
@@ -575,7 +589,7 @@ const STYLE_ITEMS = {
   ],
   'AppTheme.NoActionBarLaunch': [
     { name: 'windowSplashScreenBackground', value: '@color/splash_background' },
-    { name: 'windowSplashScreenAnimatedIcon', value: '@mipmap/ic_launcher_foreground' },
+    { name: 'windowSplashScreenAnimatedIcon', value: '@mipmap/ic_splash' },
     { name: 'postSplashScreenTheme', value: '@style/AppTheme.NoActionBar' },
     { name: 'android:windowLightStatusBar', value: 'false' },
     { name: 'android:windowLightNavigationBar', value: 'false', targetApi: '27' },
@@ -690,7 +704,7 @@ const SPLASH_XML = `<?xml version="1.0" encoding="utf-8"?>
     <item
         android:width="288dp"
         android:height="288dp"
-        android:drawable="@mipmap/ic_launcher_foreground"
+        android:drawable="@mipmap/ic_splash"
         android:gravity="center" />
 </layer-list>
 `;
@@ -704,7 +718,7 @@ function planResources(root, colours, plan, remove, notes) {
   plan.set(path.join(res, 'mipmap-anydpi-v26', 'ic_launcher_round.xml'), ADAPTIVE_ICON_XML);
   for (const file of TEMPLATE_ART) remove.push(path.join(res, ...file.split('/')));
 
-  // Launcher icons: fifteen PNG files, three for each of five screen densities.
+  // Launcher icons and the launch image: twenty PNG files, four for each of five screen densities.
   const wanted = Object.entries(DENSITIES).flatMap(([density, sizes]) =>
     Object.entries(ICON_FILES).map(([file, kind]) => ({ relative: `mipmap-${density}/${file}`, size: sizes[kind], kind })),
   );
@@ -724,11 +738,8 @@ function planResources(root, colours, plan, remove, notes) {
     if (info.width !== icon.size || info.height !== icon.size) {
       throw new ConfigureError(`${label} is ${info.width} x ${info.height}; it must be ${icon.size} x ${icon.size}.`);
     }
-    if (icon.kind === 'foreground' && !info.transparency) {
-      throw new ConfigureError(
-        `${label} has no transparency. It is the top layer of the adaptive icon: the emblem alone, on a transparent ` +
-          'background, so that the background colour and the shape Android cuts can show around it.',
-      );
+    if (NEEDS_TRANSPARENCY[icon.kind] && !info.transparency) {
+      throw new ConfigureError(`${label} has no transparency. ${NEEDS_TRANSPARENCY[icon.kind]}`);
     }
     plan.set(path.join(res, ...icon.relative.split('/')), png);
   }

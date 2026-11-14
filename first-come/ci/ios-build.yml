@@ -6,7 +6,7 @@
 # is signed and nothing is uploaded, so it needs no secrets and no Apple account.
 #
 # TEMPLATE. To use it, copy this file to .github/workflows/ios-build.yml and replace two
-# placeholders everywhere they occur (each is used twice below):
+# placeholders everywhere they occur:
 #
 #   __APP_DIR__   the folder that holds app.config.json, from the top of the repository,
 #                 without a leading or trailing slash
@@ -26,6 +26,10 @@ on:
   push:
     paths:
       - '__APP_DIR__/**'
+      # Android-only files do not need a Mac build (the Android build workflow covers them).
+      - '!__APP_DIR__/android/**'
+      - '!__APP_DIR__/SHIPPING-ANDROID.md'
+      - '!__APP_DIR__/ci/android-*.yml'
       - '__WEB_DIR__/**'
       - '.github/workflows/ios-build.yml'
 

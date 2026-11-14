@@ -206,8 +206,9 @@ you want different art:
 - `resources/android/mipmap-*/`: the launcher icon in five sizes, each as a square icon, a
   round icon, and the emblem alone on a transparent background (`ic_launcher_foreground.png`,
   the top layer of the "adaptive" icon that Android 8 and later cut into whatever shape the
-  phone uses). The script refuses a foreground without transparency or an icon of the wrong
-  size.
+  phone uses). Beside them is `ic_splash.png`, the same emblem drawn larger for the launch
+  screen. The script refuses a foreground or launch picture without transparency, or a
+  picture of the wrong size.
 - `resources/android/colors.json`: the colour behind the emblem in the icon, the launch
   screen's background, and the colour behind the system bars.
 - `resources/play/`: the two pictures the Play listing needs (step 16).
@@ -667,8 +668,8 @@ Organisation accounts can skip to step 19.
 
 ## The two CI workflows
 
-Their templates are in `ci/`. To install one, copy it to `.github/workflows/` at the top of
-the repository and fill in the placeholders, as the comment at the top of each file explains
+They are installed in `.github/workflows/` at the top of the repository, with the
+placeholders already filled in for this repository. The templates they came from are in `ci/`
 (`__APP_DIR__` is the folder this guide is in; `__WEB_DIR__` is the folder of the web game).
 Both run on GitHub's Linux machines (`ubuntu-latest`), which come with the Android SDK; the
 workflows add Java 21. As read on 14 November 2026, that runner had Android platforms 34 to 37
@@ -686,10 +687,10 @@ the last change broke the app.
 **It has not yet run on GitHub.** Its build command and its checking step were run by hand on
 a Linux machine and passed.
 
-The iPhone build workflow watches this whole folder too, so a change that only concerns
-Android also starts a build on one of GitHub's Mac machines, which cost more minutes than the
-Linux ones. If that matters, exclude `android/` and this guide in the `paths` filter of the
-iPhone build workflow.
+The iPhone build workflow watches this folder too, except `android/`, this guide and the
+Android workflow templates: a change to those alone does not start a build on one of GitHub's
+Mac machines, which cost more minutes than the Linux ones. Any other change here (the bridge,
+`app.config.json`, the web game) starts both builds.
 
 ### android-release.yml: the signed bundle for Google Play
 
@@ -864,9 +865,8 @@ Not checked, because it needs a phone, a Google Play account, an AdMob account o
 - That Google Play never leaves a price or ownership lookup unanswered now that the bridge
   sends them one at a time. The fault was found by reading the purchases plugin's source and
   is reproduced in the tests with a stand-in for the plugin, not with Google Play.
-- That the launch screen looks right. The emblem is the launcher icon's foreground layer,
-  which Android enlarges for the launch screen; whether it looks sharp enough on a
-  high-resolution screen has not been seen.
+- That the launch screen looks right. The emblem is drawn at the launch screen's own size
+  (`ic_splash.png`); how it sits on a real screen has not been seen.
 - The two workflows on GitHub: the Java and artifact actions at their current versions, the
   cache, and the upload of a single file without a zip.
 - That Play Console accepts the bundle, the upload key, the icon file without an alpha
