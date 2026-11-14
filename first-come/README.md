@@ -132,7 +132,8 @@ folder) and by the same Gradle build on a Linux machine:
 
 - The Android project downloads its libraries and builds a debug APK and a release app bundle (unsigned).
   Both are then opened and checked: package name, version, name, permissions, the AdMob app id, portrait,
-  and that the game and the freshly built bridge are inside.
+  and that the game and the freshly built bridge are inside (first run on GitHub: 14 November 2026, passed).
+  The debug APK is kept with each run, ready to install on a phone.
 
 **Not verified, because it needs developer accounts, an AdMob account and real phones:** the app running on
 any device (iPhone or Android), signing and the TestFlight and Google Play uploads, real AdMob adverts, the

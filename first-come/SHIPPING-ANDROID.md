@@ -25,12 +25,14 @@ How far to trust this guide:
 
 ## Where things stand
 
-- **The app builds.** On 14 November 2026 the project was built on a Linux machine (Java 21,
-  Android SDK 36): a debug APK, an unsigned release bundle, and a release bundle signed with a
-  throw-away key. All three were opened with Android's own tools and held what they should.
+- **The app builds.** On 14 November 2026 the build workflow built it on GitHub at the first
+  attempt: a debug APK, which is kept with the run and can be installed on a phone (step 11),
+  and an unsigned release bundle. The same build, and a release bundle signed with a
+  throw-away key, were made on a Linux machine (Java 21, Android SDK 36). All were opened
+  with Android's own tools and held what they should.
   **Nothing has run on a phone or an emulator yet**, nothing has been uploaded to Google
-  Play, and the two workflows have not yet run on GitHub. "What has not been verified" at the
-  end lists exactly what is unproven.
+  Play, and the release workflow has not yet run on GitHub. "What has not been verified" at
+  the end lists exactly what is unproven.
 - **The app's identity is set but yours to change.** `app.config.json` calls the app
   `First Come` with the package name `app.firstcome.puzzle` (the field `appId`, which is also
   the iPhone bundle id; an optional second field, `androidAppId`, gives Android a name of its
@@ -526,9 +528,7 @@ Play Console > your app > Grow users > Store presence > Main store listing. The 
 
 - **App name** (30 characters), **short description** (80), **full description** (4000).
 - **App icon**: `resources/play/icon-512.png`. Google asks for 512 x 512 pixels, a 32-bit PNG
-  (with alpha), at most 1024 KB. The file here is a PNG without an alpha channel; whether Play
-  Console insists on one has not been tried. If it refuses the file, the art script needs a
-  one-line change to export with alpha.
+  (with alpha), at most 1024 KB, which is what the file is.
 - **Feature graphic**: `resources/play/feature-graphic-1024x500.png`. 1024 x 500 pixels, JPEG
   or 24-bit PNG without alpha, which is what the file is.
 - **Phone screenshots**: `store/screenshots-android/` (five, 1080 x 1920). Google wants at
@@ -684,8 +684,7 @@ AdMob app id, portrait, and that the web game and the freshly built bridge are i
 needs no secrets. The debug APK is kept with the run for 14 days (step 11). A red run means
 the last change broke the app.
 
-**It has not yet run on GitHub.** Its build command and its checking step were run by hand on
-a Linux machine and passed.
+Its first run on GitHub, on 14 November 2026, passed and took about three minutes.
 
 The iPhone build workflow watches this folder too, except `android/`, this guide and the
 Android workflow templates: a change to those alone does not start a build on one of GitHub's
@@ -867,10 +866,12 @@ Not checked, because it needs a phone, a Google Play account, an AdMob account o
   is reproduced in the tests with a stand-in for the plugin, not with Google Play.
 - That the launch screen looks right. The emblem is drawn at the launch screen's own size
   (`ic_splash.png`); how it sits on a real screen has not been seen.
-- The two workflows on GitHub: the Java and artifact actions at their current versions, the
-  cache, and the upload of a single file without a zip.
-- That Play Console accepts the bundle, the upload key, the icon file without an alpha
-  channel and the screenshots, and what the content rating questionnaire answers.
+- The release workflow on GitHub. (The build workflow has run and passed, which proves the
+  parts the two share: the Java and artifact actions at their current versions, the cache,
+  and the upload of a single file without a zip.) Writing the keystore from a secret and
+  signing with it were tried by hand only.
+- That Play Console accepts the bundle, the upload key, the icon and the screenshots, and
+  what the content rating questionnaire answers.
 - The whole route of steps 12 to 20 in Play Console: Play App Signing, the one-time product,
   licence testers, the closed test and the application for production.
 - The Data safety answers against the form itself, and the Advertising ID declaration.

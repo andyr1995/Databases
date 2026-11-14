@@ -21,9 +21,8 @@
 # (the "paths" filter) before it has looked inside any file. Everything after the first step
 # takes the web folder from app.config.json.
 #
-# NOT YET RUN ON GITHUB. The Gradle build and the "Check what was built" step were run by hand
-# on a Linux machine on 14 November 2026 (JDK 21, Android SDK platform 36), and they passed.
-# The workflow as a whole has never run: expect to fix something the first time.
+# First run: 14 November 2026 on ubuntu-latest (Java 21). It passed at the first attempt and
+# kept the debug APK with the run.
 
 name: Android build
 
