@@ -1,9 +1,10 @@
 // Platform abstraction.
 //
 // The game only ever talks to `platform`. In a browser the defaults below are
-// used (no ads, no purchases, Web Share, localStorage). Inside the iOS/Android
-// app, vendor/native-bridge.js swaps in real implementations (AdMob, StoreKit,
-// native haptics, native share sheet, durable storage).
+// used (no ads, no purchases, Web Share, localStorage). Inside the iPhone or
+// Android app, vendor/native-bridge.js swaps in real implementations (AdMob,
+// App Store / Google Play purchases, native haptics, native share sheet,
+// durable storage).
 
 /**
  * @typedef {Object} AdProvider
@@ -123,6 +124,16 @@ export const platform = {
   onActiveChange(cb) {
     document.addEventListener('visibilitychange', () => cb(document.visibilityState === 'visible'));
   },
+
+  /**
+   * The hardware or gesture Back of an Android phone. `handler` is called on every
+   * press and returns true if the game dealt with it (closed a sheet, went back to
+   * Home). If it returns false the app is put in the background, which is what
+   * Android users expect from Back on an app's first screen.
+   * Never called in a browser or on iPhone. Only one handler is kept.
+   * @param {() => boolean} handler
+   */
+  onBack(handler) {},
 
   /** @type {AdProvider} */
   ads: noAds,

@@ -113,6 +113,17 @@ export function createShell(root) {
 
     /** True while a sheet is open (the game ignores swipes then). */
     sheetOpen: () => sheets.length > 0,
+
+    /**
+     * Android's Back button. Closes the top sheet if it may be dismissed.
+     * @returns {boolean} true if a sheet was open (closed or not), so Back goes no further
+     */
+    back() {
+      if (!sheets.length) return false;
+      const top = sheets[sheets.length - 1];
+      if (top.dismissable) top.close();
+      return true;
+    },
   };
 }
 

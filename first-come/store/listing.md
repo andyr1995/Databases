@@ -1,7 +1,10 @@
-# App Store listing for First Come
+# Store listings for First Come
 
-Copy and paste these into App Store Connect. Character limits are Apple's; the counts are in brackets.
-Everything here is a starting point that you can reword.
+Text to copy and paste into App Store Connect (first part) and Google Play Console (second part, at the end).
+Character limits are the stores' own; the counts are in brackets. Everything here is a starting point that you
+can reword.
+
+# Part 1: Apple App Store
 
 ## Name (30 max)
 
@@ -109,3 +112,53 @@ must change.
 `npm run screenshots` (inside `first-come/`) writes five 1320 x 2868 PNGs (the 6.9-inch iPhone size) to
 `store/screenshots/`. Upload them in this order: 1 play, 2 slip, 3 daily, 4 result, 5 home. Apple scales the
 6.9-inch set for smaller iPhones, so no other size is required for an iPhone-only app.
+
+# Part 2: Google Play
+
+Play Console > your app > Grow users > Store presence > Main store listing. The step-by-step guide for
+everything else on the Android side (account, signing, the purchase, the Data safety form) is
+[SHIPPING-ANDROID.md](../SHIPPING-ANDROID.md).
+
+## App name (30 max)
+
+    First Come: The Order Puzzle        [28]
+
+## Short description (80 max)
+
+    Tap the blocks in the right order to fill the board. A new puzzle every day.        [76]
+
+## Full description (4000 max)
+
+Use the App Store description above as it is. Google Play shows it as plain text; the bullet points and the
+headings in capitals are fine there.
+
+## Graphics
+
+| What | Size Play asks for | File |
+| --- | --- | --- |
+| App icon | 512 x 512 PNG | `resources/play/icon-512.png` |
+| Feature graphic | 1024 x 500 PNG or JPEG | `resources/play/feature-graphic-1024x500.png` |
+| Phone screenshots (2 to 8) | 16:9 or 9:16, each side 320 to 3840 px | `store/screenshots-android/` (five, 1080 x 1920) |
+
+Upload the screenshots in the same order: 1 play, 2 slip, 3 daily, 4 result, 5 home. Do not upload the iPhone
+set to Play: at 1320 x 2868 it is taller than the 2:1 that Play allows. `npm run art` and `npm run screenshots`
+recreate all of these.
+
+## Category and contact details
+
+- App or game: Game. Category: Puzzle.
+- Email address: **required by Google Play** and shown publicly on the listing. Use an address you are happy
+  to publish.
+- Website: https://andyr1995.github.io/Databases/first-come/
+- Privacy policy: https://andyr1995.github.io/Databases/first-come/privacy.html (required, because the app
+  shows adverts)
+
+## In-app product
+
+Play Console > Monetize > Products > In-app products (a one-time product, not a subscription).
+
+- Product ID: `remove_ads` (must match `iap.removeAdsProductId` in `app.config.json`; it cannot be changed or
+  reused once created)
+- Name: Remove Ads
+- Description: Removes banners and adverts between levels, and adds 10 hints.
+- Suggested price: £2.99 / $2.99

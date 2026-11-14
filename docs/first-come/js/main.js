@@ -154,6 +154,16 @@ async function boot() {
       store.flush();
     }
   });
+  // Android's Back button: out of a sheet, then out of a level, then out of the app.
+  platform.onBack(() => {
+    if (adOpen) return true; // an advert, or the cover shown while one loads, is up
+    if (shell.back()) return true;
+    if (!onHome) {
+      app.goHome();
+      return true;
+    }
+    return false;
+  });
   window.addEventListener('pagehide', () => store.flush());
   document.addEventListener('pointerdown', unlockAudio, true);
   // The web version can be open in two tabs. When the other tab saves, take its

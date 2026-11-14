@@ -717,6 +717,51 @@ test('after a restore, Settings stops offering to sell Remove Ads', async (t) =>
   assert.equal(await page.locator('.sheet-wrap:not(.out) .row', { hasText: 'Restore purchases' }).count(), 1);
 });
 
+test('Android Back: out of a sheet, then out of the level, then out of the app', async (t) => {
+  // A stand-in for the native bridge that only hands the game's Back handler to the test.
+  const page = await phone(t, {
+    query: '?level=30',
+    prepare: async (pg, context) => {
+      await context.addInitScript(() => {
+        window.Capacitor = { isNativePlatform: () => true };
+      });
+      await pg.route('**/vendor/native-bridge.js', (route) =>
+        route.fulfill({
+          contentType: 'text/javascript',
+          body: `export async function install(platform) {
+            platform.isNative = true;
+            platform.os = 'android';
+            platform.onBack = (handler) => { window.__back = handler; };
+          }`,
+        }),
+      );
+    },
+  });
+  const back = () => page.evaluate(() => window.__back());
+  const openSheets = () => page.locator('.sheet-wrap:not(.out)').count();
+
+  // A sheet that can be dismissed is closed by Back.
+  await page.locator('.topbar .icon-btn').nth(1).click();
+  await page.waitForSelector('.sheet');
+  assert.equal(await back(), true);
+  await page.waitForFunction(() => !document.querySelector('.sheet-wrap:not(.out)'));
+  assert.equal(await title(page), 'Level 30', 'still in the level');
+
+  // A sheet that needs an answer stays, and Back goes no further.
+  await solve(page);
+  assert.equal(await back(), true);
+  assert.equal(await openSheets(), 1);
+  assert.equal(await page.locator('.result-title').count(), 1);
+  await sheetButton(page, 'Next level').click();
+  await page.waitForFunction(() => document.querySelector('.title').textContent === 'Level 31');
+
+  // From a level, Back goes Home; from Home, it leaves the app (the handler says "not mine").
+  assert.equal(await back(), true);
+  await page.waitForSelector('.screen.home');
+  assert.equal(await back(), false);
+  assert.equal(await page.locator('.screen.home').count(), 1);
+});
+
 test('everything fits on a small phone', async (t) => {
   const page = await phone(t, { width: 320, height: 568, query: '?level=150' });
   const view = { w: 320, h: 568 };
