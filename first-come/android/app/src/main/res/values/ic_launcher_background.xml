@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Written by scripts/configure-android.mjs. Do not edit: `npm run sync` writes it again. The colour comes from resources/android/colors.json. -->
 <resources>
-    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Behind the emblem in the launcher icon (the adaptive icon's background layer). -->
+    <color name="ic_launcher_background">#232466</color>
 </resources>

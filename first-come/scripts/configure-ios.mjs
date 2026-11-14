@@ -24,13 +24,14 @@
 // the development team chosen in Xcode.
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import plist from 'plist';
 import xcode from 'xcode';
+import { ConfigureError, applyPlan, firstDifference, readPngInfo, xmlText } from './configure-shared.mjs';
 
 // The layout `cap add ios` creates. Relative to the folder that holds app.config.json.
 const IOS_PROJECT_DIR = 'ios/App';
@@ -67,8 +68,6 @@ const PRIVACY_MANIFEST_CONTENT = {
   NSPrivacyTracking: false,
   NSPrivacyTrackingDomains: [],
 };
-
-class ConfigureError extends Error {}
 
 // ---------------------------------------------------------------------------------------------
 // app.config.json
@@ -131,10 +130,6 @@ function readSkAdNetworkIds(root) {
 // ---------------------------------------------------------------------------------------------
 // Property lists, written the way Apple's own tools write them (tabs, sorted keys), so that a
 // later save from Xcode does not reshuffle the file.
-
-function xmlText(value) {
-  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
 
 export function toPlistXml(rootValue) {
   const lines = [
@@ -223,25 +218,7 @@ function buildInfoPlist(existingXml, config, skAdNetworkIds) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// PNG checks (no image library: only the header is read)
-
-function readPngInfo(buffer, label) {
-  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (buffer.length < 33 || !buffer.subarray(0, 8).equals(signature) || buffer.toString('latin1', 12, 16) !== 'IHDR') {
-    throw new ConfigureError(`${label} is not a PNG file.`);
-  }
-  const colourType = buffer[25];
-  let transparency = colourType === 4 || colourType === 6;
-  // A palette or plain image can still mark colours as transparent with a tRNS chunk.
-  for (let offset = 8; offset + 8 <= buffer.length; ) {
-    const length = buffer.readUInt32BE(offset);
-    const type = buffer.toString('latin1', offset + 4, offset + 8);
-    if (type === 'tRNS') transparency = true;
-    if (type === 'IDAT' || type === 'IEND') break;
-    offset += 12 + length;
-  }
-  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20), transparency };
-}
+// Icon and launch image
 
 function planAssets(root, plan, notes) {
   const assets = path.join(root, IOS_PROJECT_DIR, TARGET_DIR, 'Assets.xcassets');
@@ -404,15 +381,6 @@ function parsePbx(text, scratchDir) {
   };
   restore(project.hash);
   return project;
-}
-
-function firstDifference(a, b) {
-  const left = a.split('\n');
-  const right = b.split('\n');
-  for (let i = 0; i < Math.max(left.length, right.length); i += 1) {
-    if (left[i] !== right[i]) return `line ${i + 1}: "${(left[i] ?? '').trim()}" would become "${(right[i] ?? '').trim()}"`;
-  }
-  return 'no difference';
 }
 
 /** The parts of the parsed project this script works on. Throws if the layout is not Capacitor's. */
@@ -745,21 +713,7 @@ export function configureIos({ root, check = false, allowReformat = false }) {
   plan.set(pbxprojPath, project.text);
   plan.set(path.join(projectDir, XCODEPROJ, 'xcshareddata', 'xcschemes', `${SCHEME_NAME}.xcscheme`), buildScheme(project.target));
 
-  const changed = [];
-  const unchanged = [];
-  for (const [file, wanted] of plan) {
-    const content = Buffer.isBuffer(wanted) ? wanted : Buffer.from(wanted, 'utf8');
-    const relative = path.relative(root, file).split(path.sep).join('/');
-    if (existsSync(file) && readFileSync(file).equals(content)) {
-      unchanged.push(relative);
-      continue;
-    }
-    changed.push(relative);
-    if (!check) {
-      mkdirSync(path.dirname(file), { recursive: true });
-      writeFileSync(file, content);
-    }
-  }
+  const { changed, unchanged } = applyPlan(root, plan, { check });
 
   const summary =
     `${config.appName} (${config.appId}) ${config.version} build ${config.build}, iPhone only, portrait; ` +

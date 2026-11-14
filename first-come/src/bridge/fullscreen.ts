@@ -29,6 +29,39 @@
 //  is still on screen replaces the entry and is the one that gets deleted.
 //  all of this lives in the plugin instance, which outlives the web page: an ad the page
 //  put up is still up, and still closes with a Dismissed event, after the page was reloaded.
+//
+// What the plugin does on Android, read from the same version (android/src/main/java/com/
+// getcapacitor/community/admob/interstitial/*, rewarded/*, helpers/FullscreenPluginCallback.kt).
+// The promises and events are the same in every respect the state machine depends on, so it
+// runs unchanged; the differences are these:
+//
+//  prepareInterstitial / prepareRewardVideoAd
+//    - loaded: resolves { adUnitId } FIRST, then emits Loaded (iOS: the other way round).
+//      markLoaded() below is safe to run twice.
+//    - failed: emits FailedToLoad, then rejects
+//  showInterstitial
+//    - resolves as soon as InterstitialAd.show() has been CALLED, as on iOS
+//    - nothing prepared: rejects, and emits FailedToLoad (not FailedToShow)
+//    - there is no "an ad is already showing" guard; the bridge's own busy() check is the
+//      only thing that keeps a second ad from being started over the first
+//  showRewardVideoAd
+//    - emits Rewarded, then resolves { type, amount }, from OnUserEarnedRewardListener: ONLY
+//      when the reward is earned. Closing the video early leaves the promise pending for ever,
+//      exactly as on iOS. So the game's promise has to be built from events here too.
+//  events while showing (FullScreenContentCallback)
+//    - Showed (onAdShowedFullScreenContent), FailedToShow (onAdFailedToShowFullScreenContent),
+//      Dismissed (onAdDismissedFullScreenContent). The SDK reports the reward before the
+//      dismissal; rewardGraceMs covers the opposite order.
+//  prepared ads are filed under their ad unit id in a STATIC map (it survives even a new
+//  activity); Dismissed / FailedToShow remove preparedAds[that id], whatever is filed there
+//  by then, as on iOS. A page reload (Bridge.reset() on onPageStarted) drops the listeners
+//  and keeps the plugin instance.
+//  the ad is a separate activity (com.google.android.gms.ads.AdActivity, translucent theme)
+//  on top of the game's activity. The game's activity is paused while it is up and resumed
+//  when it is gone, which gives a second way to learn that an ad has closed: see onActivity().
+//  One case in which the dismissal is otherwise easily lost: the player presses Home during
+//  an ad and comes back through the launcher icon. The game's activity is launchMode
+//  singleTask, so Android destroys the ad activity above it.
 
 import { attempt, backoffDelay, type Clock, type Logger } from './util.ts';
 
@@ -65,6 +98,11 @@ export interface FullscreenTuning {
   maxBeatGapMs: number;
   /** After a rewarded ad closes without a reward, how long to wait for a late reward callback. */
   rewardGraceMs: number;
+  /**
+   * Android: once the game's activity is in front again after having been covered during a
+   * showing, how long to wait for the Dismissed event before the showing is ended without it.
+   */
+  resumeGraceMs: number;
   /** Loaded ads expire; Google documents one hour. Older ones are replaced, not shown. */
   maxAdAgeMs: number;
 }
@@ -79,6 +117,7 @@ export const DEFAULT_FULLSCREEN_TUNING: FullscreenTuning = {
   heartbeatMs: 1_000,
   maxBeatGapMs: 3_000,
   rewardGraceMs: 400,
+  resumeGraceMs: 3_000,
   maxAdAgeMs: 50 * 60_000,
 };
 
@@ -108,6 +147,11 @@ export interface FullscreenSlot {
   handle(event: FullscreenEvent): void;
   /** The app came back to the foreground. */
   onActive(): void;
+  /**
+   * Android only: the game's activity was paused (false) or resumed (true). Never called on
+   * iOS, where a full-screen ad is part of the app's own window.
+   */
+  onActivity(resumed: boolean): void;
 }
 
 interface Session {
@@ -116,6 +160,9 @@ interface Session {
   done: boolean;
   beatTimer: unknown;
   graceTimer: unknown;
+  /** Android: the game's activity has been paused since show() was entered. */
+  covered: boolean;
+  resumeTimer: unknown;
   /** Time the page has been running since show() was entered, or since the ad appeared. */
   runningMs: number;
   lastBeatAt: number;
@@ -251,6 +298,9 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
    *      late Dismissed is handled by strayEnd() below; a reward earned after this point is
    *      lost, which is why the limit for a video is the longer one.
    *
+   *   7. Android only: the game's activity was covered during the showing and has been back
+   *      in front for resumeGraceMs without a Dismissed event -> finish (see onActivity()).
+   *
    * 5 and 6 are the watchdog above: one timer owned by this module, started synchronously
    * before the plugin is called. Each tick either ends the showing or schedules the next
    * tick, so from the first line of the executor until finish() a timer is always pending
@@ -273,6 +323,8 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
         done: false,
         beatTimer: null,
         graceTimer: null,
+        covered: false,
+        resumeTimer: null,
         runningMs: 0,
         lastBeatAt: 0,
         finish(reason) {
@@ -284,6 +336,7 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
           } finally {
             s.beatTimer = cancel(s.beatTimer);
             s.graceTimer = cancel(s.graceTimer);
+            s.resumeTimer = cancel(s.resumeTimer);
             if (session === s) session = null;
             state = 'empty';
             if (reason !== 'dismissed') log(`${kind}: showing ended: ${reason}`);
@@ -391,5 +444,33 @@ export function createFullscreenSlot(kind: FullscreenKind, driver: FullscreenDri
     }
   }
 
-  return { kind, ready, showing: () => state === 'showing', load, show, handle, onActive };
+  /**
+   * Android. A full-screen ad is an activity of its own on top of the game's activity, so
+   * the game's activity is paused for as long as the ad is up, and Android resumes it only
+   * when nothing lies on top of it any more. "Paused during this showing, and now resumed"
+   * therefore means the ad is gone, however that came about.
+   *
+   * Normally the Dismissed event says so first and this changes nothing. When it does not
+   * arrive within resumeGraceMs of the resume, the showing is ended with what is known by
+   * then: an interstitial counts as shown only if its Showed event was seen, a reward only
+   * if it was reported. A pause during the wait (something covers the game again) calls the
+   * wait off. A resume without an earlier pause proves nothing and is ignored: it may be
+   * left over from before show() was called.
+   */
+  function onActivity(resumed: boolean): void {
+    const s = session;
+    if (!s || s.done) return;
+    if (!resumed) {
+      s.covered = true;
+      s.resumeTimer = cancel(s.resumeTimer);
+      return;
+    }
+    if (!s.covered || s.resumeTimer !== null) return;
+    s.resumeTimer = clock.setTimeout(() => {
+      s.resumeTimer = null;
+      s.finish('the game is in front again and no dismissal was reported');
+    }, tuning.resumeGraceMs);
+  }
+
+  return { kind, ready, showing: () => state === 'showing', load, show, handle, onActive, onActivity };
 }

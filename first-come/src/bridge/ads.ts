@@ -4,6 +4,26 @@
 // routes plugin events. The two state machines live next door:
 //   fullscreen.ts  interstitial and rewarded video
 //   banner.ts      the bottom banner and the height the game must keep clear
+//
+// The start-up is the same on both systems. What the plugin does with each step on Android
+// (android/src/main/java/com/getcapacitor/community/admob/AdMob.java and
+// consent/AdConsentExecutor.java, 8.3.0):
+//
+//  requestConsentInfo           UMP requestConsentInfoUpdate(); resolves the same four fields
+//                               as iOS, rejects with the SDK's message.
+//  showConsentForm              UMP loadAndShowConsentFormIfRequired(); resolves status,
+//                               canRequestAds and privacyOptionsRequirementStatus.
+//  showPrivacyOptionsForm       UMP showPrivacyOptionsForm().
+//  trackingAuthorizationStatus  always resolves { status: 'authorized' }: Android has no
+//                               tracking prompt. So requestTrackingAuthorization (which only
+//                               resolves) is never reached, and no branch is needed here.
+//  initialize                   MobileAds.initialize() on the UI thread, then waits up to 5 s
+//                               for the view the banner will be added to, and REJECTS if it
+//                               never appears. That is inside stepTimeoutMs, and a rejection
+//                               is retried like any other failed start.
+//  isTesting                    never sent, as on iOS: see GOOGLE_ANDROID_DEMO_UNITS in
+//                               config.ts. resolveAdUnits() has already put Google's demo
+//                               units in place of real ones when app.config.json says testing.
 
 import type {
   AdMobPlugin,
@@ -97,12 +117,16 @@ export const DEFAULT_ADS_TUNING: AdsTuning = {
 
 export interface AdsDeps {
   admob: AdMobLike;
+  /** Capacitor.getPlatform(). Anything but 'android' gets the iOS behaviour. */
+  os?: string;
   /** Ad unit ids for this OS, already resolved (see resolveAdUnits). */
   units: AdUnits;
   /** app.config.json admob.testing. */
   testing: boolean;
   /** Subscribe to foreground / background changes. */
   onActive?: (cb: (active: boolean) => void) => void;
+  /** Android: subscribe to the game's activity being paused (false) and resumed (true). */
+  onActivity?: (cb: (resumed: boolean) => void) => void;
   /** Durable storage for the consent cache. */
   store?: Persist;
   viewport?: Viewport;
@@ -120,6 +144,7 @@ interface Consent {
 
 export function createAdsProvider(deps: AdsDeps): AdProvider {
   const { admob, units } = deps;
+  const android = deps.os === 'android';
   const clock = deps.clock ?? systemClock;
   const log = deps.log ?? consoleLogger;
   const tuning: AdsTuning = {
@@ -164,15 +189,46 @@ export function createAdsProvider(deps: AdsDeps): AdProvider {
     host,
   );
 
+  /**
+   * Android: removeBanner answers before the view has been taken away, and reports the
+   * removal itself with a bannerAdSizeChanged {0,0} event (see banner.ts). These are the
+   * removeBanner calls still waiting for that event.
+   */
+  let removalWaiters: Array<() => void> = [];
+
+  /** Settles on the next {0,0} size event, or after removeSettleMs when there was no view to remove. */
+  function bannerRemoved(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const done = (): void => {
+        clock.clearTimeout(timer);
+        removalWaiters = removalWaiters.filter((waiter) => waiter !== done);
+        resolve();
+      };
+      const timer = clock.setTimeout(done, tuning.banner.removeSettleMs);
+      removalWaiters.push(done);
+    });
+  }
+
   const banner = createBannerController(
     {
       create: () => admob.showBanner({ adId: units.banner, adSize: ADAPTIVE_BANNER, position: BOTTOM_CENTER, margin: 0, npa }),
       hide: () => admob.hideBanner(),
       resume: () => admob.resumeBanner(),
-      remove: () => admob.removeBanner(),
+      remove: android
+        ? () => {
+            const removed = bannerRemoved(); // listening before the call, so the event cannot be missed
+            return attempt(() => admob.removeBanner()).then(() => removed);
+          }
+        : () => admob.removeBanner(),
     },
-    { clock, log, tuning: tuning.banner, viewport: deps.viewport ?? NO_VIEWPORT, canLoad },
+    { clock, log, tuning: tuning.banner, viewport: deps.viewport ?? NO_VIEWPORT, canLoad, android },
   );
+
+  function handleBannerSize(size: { height?: unknown } | undefined): void {
+    const height = Number(size && size.height);
+    if (!(height > 0)) for (const done of removalWaiters.slice()) done();
+    banner.handleSize(height);
+  }
 
   /** A plugin event handler that cannot throw into the Capacitor bridge. */
   const guard =
@@ -191,7 +247,7 @@ export function createAdsProvider(deps: AdsDeps): AdProvider {
 
   async function registerListeners(): Promise<void> {
     await Promise.all([
-      admob.addListener(BANNER_SIZE_CHANGED, guard((size) => banner.handleSize(Number(size && size.height)))),
+      admob.addListener(BANNER_SIZE_CHANGED, guard(handleBannerSize)),
       admob.addListener(BANNER_LOADED, guard(() => banner.handleLoaded())),
       admob.addListener(BANNER_FAILED, guard((error) => banner.handleFailed(error))),
 
@@ -292,6 +348,7 @@ export function createAdsProvider(deps: AdsDeps): AdProvider {
    * docs/consent.md, "iOS tracking authorization": ask only while the status is
    * notDetermined. When an IDFA message is published in AdMob, the consent form above has
    * already shown the system prompt and the status is no longer notDetermined here.
+   * On Android the status is always 'authorized' and nothing is asked.
    */
   async function askTracking(): Promise<void> {
     try {
@@ -403,6 +460,17 @@ export function createAdsProvider(deps: AdsDeps): AdProvider {
       });
     } catch (error) {
       log('Could not subscribe to app state changes', error);
+    }
+  }
+
+  if (android && deps.onActivity) {
+    try {
+      deps.onActivity((resumed) => {
+        interstitial.onActivity(resumed);
+        rewarded.onActivity(resumed);
+      });
+    } catch (error) {
+      log('Could not subscribe to activity changes', error);
     }
   }
 

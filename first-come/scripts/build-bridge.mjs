@@ -27,6 +27,11 @@ if (!webDirStat || !webDirStat.isDirectory()) {
   process.exit(1);
 }
 
+// The oldest engines the bundle must parse: Safari 15 for iPhone (iOS 15), and for Android
+// the oldest WebView the game's own stylesheet works in (it uses the `inset` shorthand,
+// Chromium 87). Capacitor itself accepts WebView 60 and up.
+const TARGETS = ['safari15', 'chrome87'];
+
 const entry = path.join(root, 'src', 'bridge', 'index.ts');
 const outfile = path.join(webDir, 'vendor', 'native-bridge.js');
 // Written relative to the generated file, so the header stays right when both folders move.
@@ -36,7 +41,8 @@ const banner = [
   '/*',
   ' * GENERATED FILE. Do not edit: changes are overwritten by the next build.',
   ' *',
-  ' * Native bridge for the Capacitor app: AdMob, StoreKit, haptics, share sheet, durable storage.',
+  ' * Native bridge for the Capacitor apps (iPhone and Android): AdMob, App Store and Google Play',
+  ' * purchases, haptics, share sheet, durable storage, Android Back.',
   ' * js/platform.js imports it only when the game runs inside the native shell.',
   ' *',
   ` * Source:  ${sourceFromOutput}/ (TypeScript; ad unit ids come from app.config.json beside it)`,
@@ -64,7 +70,7 @@ const result = await build({
   bundle: true,
   format: 'esm',
   platform: 'browser',
-  target: ['safari15'],
+  target: TARGETS,
   minify: true,
   legalComments: 'eof',
   banner: { js: banner },
@@ -74,7 +80,7 @@ const result = await build({
 });
 
 const bytes = Object.values(result.metafile.outputs)[0]?.bytes ?? 0;
-console.log(`build:bridge: wrote ${rel(outfile)} (${(bytes / 1024).toFixed(1)} kB, esm, safari15, minified)`);
+console.log(`build:bridge: wrote ${rel(outfile)} (${(bytes / 1024).toFixed(1)} kB, esm, ${TARGETS.join(' + ')}, minified)`);
 
 const config = { admob: appConfig.admob ?? { testing: true }, iap: appConfig.iap ?? { removeAdsProductId: '' } };
 for (const warning of configWarnings(config)) console.warn(`build:bridge: note: ${warning}`);

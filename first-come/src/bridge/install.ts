@@ -1,5 +1,5 @@
 import { type AdMobLike, createAdsProvider, createUnavailableAds } from './ads.ts';
-import { type AppLike, createAppState } from './app-state.ts';
+import { type AppLike, createActivityWatch, createAppState, createOnBack } from './app-state.ts';
 import type { Viewport } from './banner.ts';
 import { type BridgeConfig, resolveAdUnits } from './config.ts';
 import { createHaptic, type HapticsLike } from './haptics.ts';
@@ -37,8 +37,10 @@ export interface BridgeDeps {
  * Swap the native implementations into the game's `platform` object. Everything the bridge
  * touches comes in through `deps`, so this runs unchanged under test with fake plugins.
  *
- * This only wires things up: nothing is awaited, and the one plugin call made is the
- * app-state subscription. The ad SDK starts when the game calls platform.ads.init().
+ * This only wires things up: nothing is awaited, and the only plugin calls made are App
+ * listener registrations (the app state; on Android also the activity's pause and resume,
+ * and Back, which must work before the game has got as far as asking for it).
+ * The ad SDK starts when the game calls platform.ads.init().
  */
 export function installBridge(platform: Platform, deps: BridgeDeps): void {
   const { config, plugins } = deps;
@@ -56,17 +58,25 @@ export function installBridge(platform: Platform, deps: BridgeDeps): void {
   platform.appReady = createAppReady(plugins.splash, log);
   platform.persist = persist;
   platform.onActiveChange = onActive;
+  platform.onBack = createOnBack(plugins.app, deps.os, log);
   platform.ads = units
     ? createAdsProvider({
         admob: plugins.admob,
+        os: deps.os,
         units,
         testing: config.admob.testing,
         onActive,
+        onActivity: createActivityWatch(plugins.app, deps.os, log),
         store: persist,
         viewport: deps.viewport,
         clock: deps.clock,
         log,
       })
     : createUnavailableAds();
-  platform.iap = createIapProvider(plugins.purchases, config.iap.removeAdsProductId, { clock: deps.clock, log });
+  platform.iap = createIapProvider(plugins.purchases, config.iap.removeAdsProductId, {
+    os: deps.os,
+    onActive,
+    clock: deps.clock,
+    log,
+  });
 }

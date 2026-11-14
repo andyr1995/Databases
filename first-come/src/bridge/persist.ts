@@ -11,8 +11,14 @@ export interface LegacyStorage {
 }
 
 /**
- * platform.persist backed by @capacitor/preferences (UserDefaults on iOS), which unlike
- * the web view's localStorage is not purged by the system when storage runs low.
+ * platform.persist backed by @capacitor/preferences (UserDefaults on iOS; on Android the
+ * SharedPreferences file "CapacitorStorage"), which unlike the web view's localStorage is
+ * not purged by the system when storage runs low.
+ *
+ * Android (PreferencesPlugin.java, 8.0.1) answers get() with { value: null } for an absent
+ * key, like iOS. set() stores with SharedPreferences.apply(): the value is readable at once
+ * and written to disk a moment later, and a value that is not a string would DELETE the key,
+ * which is why set() below always sends a string.
  *
  * Migration: the first time a key is read that Preferences does not have but localStorage
  * does (a save made before the bridge existed, or while it failed to load), the value is

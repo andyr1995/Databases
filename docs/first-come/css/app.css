@@ -16,8 +16,8 @@
   /* Room kept free for a banner that is wanted but has not loaded yet. */
   --banner-space: 0px;
   --sheet: #24275e;
-  --safe-top: env(safe-area-inset-top, 0px);
-  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
   color-scheme: dark;
 }
 
@@ -95,8 +95,8 @@ p {
   width: 100%;
   max-width: 520px;
   height: 100%;
-  padding: var(--safe-top) env(safe-area-inset-right, 0px) max(var(--safe-bottom), var(--banner), var(--banner-space))
-    env(safe-area-inset-left, 0px);
+  padding: var(--safe-top) var(--safe-area-inset-right, env(safe-area-inset-right, 0px)) max(var(--safe-bottom), var(--banner), var(--banner-space))
+    var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
 }
 
 .screen {

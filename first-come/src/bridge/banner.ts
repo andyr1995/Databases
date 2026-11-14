@@ -38,6 +38,63 @@
 //           the listeners. A banner the previous page put up is then still on screen, over a
 //           page that knows nothing about it. clearLeftover() takes it down.
 
+//
+// What the plugin does on Android, read from the same version (android/src/main/java/com/
+// getcapacitor/community/admob/banner/BannerExecutor.java, BannerAdSizeInfo.kt, AdMob.java).
+// The controller runs with `android: true` there; each difference it acts on is marked (A).
+//
+//  showBanner   creates an AdView with the anchored adaptive size for the display width and
+//               puts it into a wrapper that is added AT ONCE to the web view's parent (the
+//               CoordinatorLayout of Capacitor's activity), bottom-aligned, on top of the web
+//               view. Nothing is visible until the ad has loaded. It resolves straight away.
+//               When loaded it emits bannerAdSizeChanged { width, height } and bannerAdLoaded,
+//               and again on every refresh. width/height are AdSize.getWidth()/getHeight():
+//               dp, which is CSS px in the web view. As on iOS the gap under the banner is
+//               NOT included.
+//               (A) If the plugin still holds an AdView (mAdView != null: one that is loading,
+//               hidden, or left by an earlier page) showBanner only reloads that view and
+//               NEVER ANSWERS. So a view the plugin may still hold is removed before a new
+//               one is asked for (dropNative()).
+//  where it sits  the wrapper's bottom margin is `margin` plus the bottom system-bar /
+//               cutout inset that reaches it. Capacitor's SystemBars plugin (SystemBars.java)
+//               decides what reaches it: on a WebView older than 140 it pads the whole
+//               window content clear of the system bars and passes 0 down, so the banner
+//               sits on the bottom edge of the web view; from WebView 140 on, with
+//               viewport-fit=cover, the web view runs edge to edge under the navigation bar
+//               and the banner is lifted above the bar (3-button or gesture) by that inset.
+//               Either way the gap under the banner is the bottom safe-area inset of the
+//               page, which is what Viewport.safeAreaBottom() reads, so height() below holds
+//               on both systems.
+//               This rests on the window being edge to edge. SystemBars tells the page the
+//               bar heights (--safe-area-inset-*) whether or not it is, but in a window that
+//               is not, Android itself keeps the content clear of the bars and no inset
+//               reaches the wrapper: height() would be too large by the navigation bar. An
+//               app that targets Android 15+ is edge to edge on Android 15+ by itself; on
+//               Android 14 and earlier MainActivity asks for it (EdgeToEdge.enable, written
+//               by scripts/configure-android.mjs, which refuses a MainActivity without it).
+//  load failure (first load or a refresh) removes the view and forgets it, emits
+//               bannerAdSizeChanged {0,0} and bannerAdFailedToLoad. Same as iOS.
+//  hideBanner   hides the wrapper, pauses the AdView (no refreshes while hidden), emits
+//               {0,0}, and resolves from the UI thread once that is done. It REJECTS when
+//               there is no AdView. The controller only hides a banner that is on screen.
+//  resumeBanner (A) resolves at once, before it has acted, and also when there is no view
+//               (iOS rejects then). The proof that the banner is back is the
+//               bannerAdSizeChanged {w,h} it emits after un-hiding.
+//  removeBanner removes and destroys the AdView, loading or loaded, hidden or not, and emits
+//               {0,0}. It always resolves, (A) and it resolves BEFORE the removal has
+//               happened on the UI thread. A showBanner sent on that answer can still find
+//               the old view and fall into the never-answering path above. ads.ts therefore
+//               wraps the Android driver's remove() so that it only answers once the {0,0}
+//               has arrived (or removeSettleMs has passed, when there was nothing to remove).
+//  Order.       Plugin calls run one after another on one background thread and hand their
+//               work to the UI thread in that order, so hide and resume cannot overtake
+//               each other as on iOS. Sending them one at a time is still right: see above.
+//  Reload.      As on iOS the plugin instance and its banner outlive the page (Bridge.reset()
+//               only drops the listeners), so clearLeftover() is needed here too. On Android
+//               it also finds a leftover that was still loading.
+//  initialize() need not have run for any of these calls, but the controller waits for
+//               canLoad() on both systems.
+
 import { attempt, backoffDelay, type Clock, type Logger } from './util.ts';
 
 export interface BannerDriver {
@@ -50,7 +107,10 @@ export interface BannerDriver {
 
 /** What the controller needs to know about the web view. */
 export interface Viewport {
-  /** env(safe-area-inset-bottom) in CSS px: the home-indicator gap the banner sits above. */
+  /**
+   * The bottom safe-area inset of the page in CSS px: the gap the banner sits above (the
+   * home indicator on iPhone, the navigation bar on an edge-to-edge Android web view).
+   */
   safeAreaBottom(): number;
   /** Width of the layout viewport in CSS px. */
   width(): number;
@@ -69,6 +129,10 @@ export interface BannerTuning {
   relayoutDelayMs: number;
   /** A plugin call waits at most this long for the call before it to answer. */
   callWaitMs: number;
+  /** Android: after resumeBanner has answered, how long to wait for the size event that proves the banner is back. */
+  resumeConfirmMs: number;
+  /** Android: how long removeBanner is given to report that the view is gone (see ads.ts). */
+  removeSettleMs: number;
 }
 
 export const DEFAULT_BANNER_TUNING: BannerTuning = {
@@ -77,6 +141,8 @@ export const DEFAULT_BANNER_TUNING: BannerTuning = {
   loadTimeoutMs: 45_000,
   relayoutDelayMs: 300,
   callWaitMs: 5_000,
+  resumeConfirmMs: 2_000,
+  removeSettleMs: 500,
 };
 
 export interface BannerHost {
@@ -86,6 +152,8 @@ export interface BannerHost {
   viewport: Viewport;
   /** Consent is settled and the SDK is running. */
   canLoad(): boolean;
+  /** The plugin behaves as its Android source does (see the notes at the top of this file). */
+  android?: boolean;
 }
 
 export interface BannerController {
@@ -120,6 +188,7 @@ type Phase = 'none' | 'pending' | 'visible' | 'hidden';
 
 export function createBannerController(driver: BannerDriver, host: BannerHost): BannerController {
   const { clock, log, tuning, viewport } = host;
+  const android = host.android === true;
 
   let wanted = false;
   let phase: Phase = 'none';
@@ -150,7 +219,8 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
   /**
    * What onBannerHeight reports: the distance from the bottom edge of the screen to the top
    * edge of the banner. The plugin pins the banner's bottom edge to the bottom of the safe
-   * area (margin 0), so that is the banner's own height plus the home-indicator inset.
+   * area (margin 0), so that is the banner's own height plus the bottom safe-area inset
+   * (iPhone: the home indicator; Android: see "where it sits" at the top of this file).
    * 0 whenever there is no banner on screen.
    */
   function height(): number {
@@ -228,22 +298,48 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
     });
   }
 
+  /**
+   * (A) Android: have the plugin let go of a view it may still hold, so that the next
+   * showBanner creates one instead of reloading the old one without answering. On iOS
+   * showBanner replaces the view itself, and nothing is sent.
+   */
+  function dropNative(): void {
+    if (!android) return;
+    send(() => driver.remove()).catch((error) => log('removeBanner failed', error));
+  }
+
+  /** The view that was to be un-hidden is not there any more: start again with a new one. */
+  function gone(): void {
+    loadTimer = cancel(loadTimer);
+    phase = 'none';
+    nativeHeight = 0;
+    dropNative();
+    apply();
+  }
+
   function resume(): void {
     phase = 'pending';
     const id = ++requestId;
     watchLoad(id);
     send(() => driver.resume()).then(
       () => {
-        // The size event normally got here first; this covers its absence.
-        if (id === requestId && phase === 'pending') appeared();
+        if (id !== requestId || phase !== 'pending') return;
+        if (!android) {
+          // The size event normally got here first; this covers its absence.
+          appeared();
+          return;
+        }
+        // (A) On Android the answer says nothing: it is given before the view is un-hidden,
+        // and also when there is no view. Only the size event counts, and it is due now.
+        loadTimer = cancel(loadTimer);
+        loadTimer = clock.setTimeout(() => {
+          loadTimer = null;
+          if (id === requestId && phase === 'pending') gone();
+        }, tuning.resumeConfirmMs);
       },
       () => {
         // "not find subView": the plugin removed the view (a refresh failed while it was hidden).
-        if (id !== requestId || phase !== 'pending') return;
-        loadTimer = cancel(loadTimer);
-        phase = 'none';
-        nativeHeight = 0;
-        apply();
+        if (id === requestId && phase === 'pending') gone();
       },
     );
   }
@@ -283,10 +379,16 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
     if (measure(() => viewport.width()) !== builtForWidth) scheduleRelayout();
   }
 
-  function failed(error?: unknown): void {
+  /**
+   * `removedByPlugin`: the plugin itself reported the failure (bannerAdFailedToLoad), which
+   * it does after removing the view. Otherwise the controller gave up on its own (no answer
+   * in time, or the showBanner call was rejected) and the plugin may still hold the view.
+   */
+  function failed(error?: unknown, removedByPlugin = false): void {
     loadTimer = cancel(loadTimer);
-    phase = 'none'; // on a load failure the plugin has removed the view
+    phase = 'none';
     nativeHeight = 0;
+    if (!removedByPlugin) dropNative();
     failures++;
     emit();
     retryTimer = cancel(retryTimer);
@@ -356,7 +458,7 @@ export function createBannerController(driver: BannerDriver, host: BannerHost): 
       appeared();
     },
     handleFailed(error) {
-      failed(error);
+      failed(error, true);
     },
     refresh() {
       apply();

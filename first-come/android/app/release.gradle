@@ -1,0 +1,62 @@
+// Written by scripts/configure-android.mjs. Do not edit: `npm run sync` writes it again.
+//
+// What a build takes from outside the repository, so that nothing secret is ever committed:
+// the upload key that signs a release, and, if wanted, the version code.
+//
+//   ANDROID_KEYSTORE_FILE       the keystore file that holds the upload key (.jks or .keystore);
+//                               a full path, or a path from the android/ folder
+//   ANDROID_KEYSTORE_PASSWORD   the keystore's password
+//   ANDROID_KEY_ALIAS           the name of the key inside the keystore
+//   ANDROID_KEY_PASSWORD        the key's password
+//   ANDROID_VERSION_CODE        optional: used instead of versionCode in build.gradle, which
+//                               comes from "build" in app.config.json
+//
+// Each one is looked for first as a Gradle property of that name (-PNAME=value on the command
+// line, or a line NAME=value in ~/.gradle/gradle.properties, which is outside the repository)
+// and then as an environment variable of that name.
+//
+// With none of the four signing values, release builds are made unsigned: enough to prove that
+// the app builds, not enough for Google Play, which refuses an unsigned app bundle. With only
+// some of them the build stops and says which are missing. Debug builds never use any of this;
+// Android signs them with its own debug key.
+
+def fromOutside = { String name ->
+    def value = project.findProperty(name) ?: System.getenv(name)
+    return value == null || value.toString().isEmpty() ? null : value.toString()
+}
+
+def signingNames = ['ANDROID_KEYSTORE_FILE', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']
+def signingValues = signingNames.collectEntries { [(it): fromOutside(it)] }
+def signingMissing = signingNames.findAll { signingValues[it] == null }
+
+if (signingMissing.isEmpty()) {
+    def keystore = rootProject.file(signingValues.ANDROID_KEYSTORE_FILE)
+    if (!keystore.isFile()) {
+        throw new GradleException("ANDROID_KEYSTORE_FILE is ${keystore}, which is not a file.")
+    }
+    android {
+        signingConfigs {
+            release {
+                storeFile keystore
+                storePassword signingValues.ANDROID_KEYSTORE_PASSWORD
+                keyAlias signingValues.ANDROID_KEY_ALIAS
+                keyPassword signingValues.ANDROID_KEY_PASSWORD
+            }
+        }
+        buildTypes {
+            release {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+} else if (signingMissing.size() < signingNames.size()) {
+    throw new GradleException("Release signing is only partly set up. Missing: ${signingMissing.join(', ')}. Give all four values, or none of them for an unsigned build.")
+}
+
+def versionCodeFromOutside = fromOutside('ANDROID_VERSION_CODE')
+if (versionCodeFromOutside != null) {
+    if (!(versionCodeFromOutside ==~ /[1-9][0-9]{0,9}/) || versionCodeFromOutside.toLong() > 2100000000L) {
+        throw new GradleException("ANDROID_VERSION_CODE must be a whole number from 1 to 2100000000. Got: ${versionCodeFromOutside}")
+    }
+    android.defaultConfig.versionCode = versionCodeFromOutside.toInteger()
+}

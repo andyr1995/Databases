@@ -71,6 +71,13 @@ export interface Platform {
   appReady(): void;
   persist: Persist;
   onActiveChange(cb: (active: boolean) => void): void;
+  /**
+   * Android's Back (button or gesture). `handler` returns true if the game dealt with the
+   * press; if it returns false the app is put in the background. Only one handler is kept.
+   * Until the game has given a handler, every press puts the app in the background.
+   * Never called on iPhone.
+   */
+  onBack(handler: () => boolean): void;
   ads: AdProvider;
   iap: IapProvider;
 }

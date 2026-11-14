@@ -99,3 +99,11 @@ app/src/main/assets/public
 app/src/main/assets/capacitor.config.json
 app/src/main/assets/capacitor.plugins.json
 app/src/main/res/xml/config.xml
+
+# Added by scripts/configure-android.mjs. A signing key must never be committed: keep the upload
+# keystore outside the repository (see SHIPPING-ANDROID.md). These rules are the safety net.
+*.jks
+*.keystore
+keystore.properties
+# Left behind by the Kotlin compiler.
+.kotlin/

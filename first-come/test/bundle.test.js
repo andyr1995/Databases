@@ -1,8 +1,9 @@
 // The built file itself: <webDir>/vendor/native-bridge.js, exactly as the game imports it.
 //
-// `npm test` rebuilds it first. Here it is loaded in Node with a pretend iOS shell in which
-// NO plugin is implemented (every plugin call rejects), which is the harshest condition the
-// bridge can meet: install() must still honour the contract and nothing may throw or reject.
+// `npm test` rebuilds it first. Here it is loaded in Node with a pretend iOS shell, and then
+// a pretend Android shell, in which NO plugin is implemented (every plugin call rejects),
+// which is the harshest condition the bridge can meet: install() must still honour the
+// contract and nothing may throw or reject.
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -79,9 +80,12 @@ test('the bundle is one self-contained, minified ES module that exports install(
 
 test('only the ad and purchase settings of app.config.json are compiled in', () => {
   const config = JSON.parse(readFileSync(path.join(root, 'app.config.json'), 'utf8'));
-  for (const id of [config.admob.ios.banner, config.admob.ios.interstitial, config.admob.ios.rewarded, config.iap.removeAdsProductId]) {
-    assert.ok(source.includes(id), `${id} is in the bundle`);
+  for (const os of ['ios', 'android']) {
+    for (const format of ['banner', 'interstitial', 'rewarded']) {
+      assert.ok(source.includes(config.admob[os][format]), `admob.${os}.${format} is in the bundle`);
+    }
   }
+  assert.ok(source.includes(config.iap.removeAdsProductId));
   assert.ok(!source.includes(config.trackingUsageDescription));
   assert.ok(!source.includes(JSON.stringify(config.webDir)));
 });
@@ -134,4 +138,54 @@ test('with every plugin missing, nothing throws, nothing rejects, and no ad is e
     warnings.some((line) => line.includes('[native-bridge]') && line.includes('not implemented on ios')),
     'the failures were reported, not swallowed silently',
   );
+});
+
+// --- the same file inside the Android shell -----------------------------------------------------
+
+test('on Android: install() honours the contract, and with every plugin missing nothing throws or rejects', async () => {
+  // What @capacitor/core looks for to decide it is running inside the Android shell. It asks
+  // each time, and looks for this before it looks for the iOS handler.
+  globalThis.androidBridge = { postMessage() {} };
+  try {
+    const web = await loadWebPlatform();
+    assert.equal(await bridge.install(web.platform), undefined);
+    const { platform } = web;
+    assertContract(platform, web);
+    assert.equal(platform.isNative, true);
+    assert.equal(platform.os, 'android');
+    assert.equal(platform.ads.name, 'admob');
+
+    assert.deepEqual(await resultKinds(platform.ads, ADS_ARGS), await resultKinds(web.noAds, ADS_ARGS));
+    assert.equal(platform.ads.enabled(), true, 'rewards are never handed out for free inside the app');
+    assert.equal(platform.ads.interstitialReady(), false);
+    assert.equal(await platform.ads.showInterstitial(), false);
+    assert.equal(await platform.ads.showRewarded(), false);
+
+    assert.equal(await platform.iap.product(), null);
+    assert.equal(await platform.iap.owned(), false);
+    assert.equal(await platform.iap.purchase(), 'failed');
+    assert.equal(await platform.iap.restore(), false);
+
+    assert.equal(platform.haptic('tap'), undefined);
+    assert.equal(await platform.share({ text: 'hello' }), 'failed');
+    assert.equal(platform.openExternal('https://example.com'), undefined);
+    assert.equal(platform.appReady(), undefined);
+    assert.equal(await platform.persist.get('save.v1'), null);
+    assert.equal(platform.onActiveChange(() => {}), undefined);
+    assert.equal(platform.onBack(() => false), undefined);
+
+    await settle();
+    await settle();
+    assert.deepEqual(rejections.map(String), [], 'no unhandled promise rejection anywhere');
+    // (The plugin proxies were created when this file was first loaded, in the iOS shell, and
+    // word their errors accordingly. What shows that the Android paths ran is which calls failed.)
+    for (const call of ['App.addListener(backButton) failed', 'App.addListener(pause / resume) failed']) {
+      assert.ok(
+        warnings.some((line) => line.includes('[native-bridge]') && line.includes(call)),
+        `"${call}" was reported, not swallowed silently`,
+      );
+    }
+  } finally {
+    delete globalThis.androidBridge;
+  }
 });

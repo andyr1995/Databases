@@ -3,17 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "First Come: native iOS wrapper, tools and tests for the web game",
+  "description": "First Come: native iOS and Android wrapper, tools and tests for the web game",
   "engines": {
     "node": ">=22.18"
   },
   "scripts": {
     "build:bridge": "node scripts/build-bridge.mjs",
+    "check:config": "node scripts/check-config.mjs",
     "configure:ios": "node scripts/configure-ios.mjs",
+    "configure:android": "node scripts/configure-android.mjs",
     "update:skadnetwork": "node scripts/update-skadnetwork.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "npm run build:bridge && node --test \"test/**/*.test.js\"",
-    "sync": "npm run build:bridge && cap sync ios && node scripts/configure-ios.mjs",
+    "sync": "node scripts/check-config.mjs && npm run build:bridge && cap sync ios && cap sync android && node scripts/configure-ios.mjs && node scripts/configure-android.mjs",
     "test:e2e": "node --test \"e2e/*.test.js\"",
     "levels": "node scripts/build-levels.mjs",
     "art": "node scripts/make-art.mjs",
@@ -34,6 +36,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.6.2",
+    "@xmldom/xmldom": "^0.9.12",
     "esbuild": "^0.28.2",
     "plist": "^3.1.1",
     "typescript": "^7.0.2",

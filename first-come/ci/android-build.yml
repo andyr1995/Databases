@@ -1,0 +1,244 @@
+# Android build check
+#
+# Proves, on a Linux machine in the cloud, that the Android app still builds: it installs the
+# JavaScript packages, copies the web game into the Android project, downloads the Android
+# libraries (Capacitor, Google Mobile Ads, Play Billing and the other plugins) and builds two
+# things: a debug APK, which can be installed on a phone for a first look, and the release app
+# bundle, unsigned. Nothing is uploaded to Google, so it needs no secrets and no Google account.
+#
+# The debug APK is kept with the run for 14 days: open the run on the repository's Actions
+# page and look under "Artifacts". SHIPPING-ANDROID.md says how to put it on a phone.
+#
+# TEMPLATE. To use it, copy this file to .github/workflows/android-build.yml and replace two
+# placeholders everywhere they occur (each is used twice below):
+#
+#   __APP_DIR__   the folder that holds app.config.json, from the top of the repository,
+#                 without a leading or trailing slash
+#   __WEB_DIR__   the folder of the web game, written the same way. It must be the folder that
+#                 "webDir" in app.config.json points at; the first step below checks that.
+#
+# The web folder has to be repeated here because GitHub decides whether to start the workflow
+# (the "paths" filter) before it has looked inside any file. Everything after the first step
+# takes the web folder from app.config.json.
+#
+# NOT YET RUN ON GITHUB. The Gradle build and the "Check what was built" step were run by hand
+# on a Linux machine on 14 November 2026 (JDK 21, Android SDK platform 36), and they passed.
+# The workflow as a whole has never run: expect to fix something the first time.
+
+name: Android build
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '__APP_DIR__/**'
+      - '__WEB_DIR__/**'
+      - '.github/workflows/android-build.yml'
+
+env:
+  APP_DIR: __APP_DIR__
+  WEB_DIR: __WEB_DIR__
+
+permissions:
+  contents: read
+
+# A newer push to the same branch replaces a build that is still running.
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Debug APK and release bundle (unsigned)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+
+      - name: Check that this workflow watches the right web folder
+        run: |
+          node -e '
+            const path = require("node:path");
+            const appDir = process.env.APP_DIR;
+            const config = require(path.resolve(appDir, "app.config.json"));
+            const webDir = path.relative(process.cwd(), path.resolve(appDir, config.webDir)).split(path.sep).join("/");
+            if (webDir !== process.env.WEB_DIR) {
+              console.log(`::error::app.config.json says the web game is in "${webDir}", but this workflow watches "${process.env.WEB_DIR}". Change WEB_DIR and the paths filter at the top of the workflow file.`);
+              process.exit(1);
+            }
+            console.log(`Wrapper: ${appDir}   Web game: ${webDir}`);
+          '
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ env.APP_DIR }}/package-lock.json
+
+      # Capacitor 8 compiles its Android code for Java 21. GitHub's Linux machines come with the
+      # Android SDK already installed (the ANDROID_HOME variable points at it), so only Java
+      # has to be chosen.
+      - name: Set up Java 21
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install JavaScript packages
+        working-directory: ${{ env.APP_DIR }}
+        run: npm ci
+
+      - name: Typecheck and test the bridge and the project scripts
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Copy the web game into the Android project
+        working-directory: ${{ env.APP_DIR }}
+        run: npm run sync
+
+      # `npm run sync` rebuilds generated files. If that changed a file that is committed, the
+      # commit was made without running it. The build goes on (it uses the fresh files), but
+      # say so.
+      - name: Report committed files that were out of date
+        run: |
+          changed="$(git status --porcelain)"
+          if [ -n "$changed" ]; then
+            echo "::warning::npm run sync changed files that are committed. Run it locally and commit the result."
+            echo "$changed"
+          else
+            echo "The committed files match what npm run sync produces."
+          fi
+
+      # The Android libraries and Gradle itself are the slow downloads. Which versions are
+      # fetched follows from the npm packages (each plugin brings its own build file) and from
+      # the project's Gradle files, so those are the key.
+      - name: Restore downloaded Android libraries and Gradle
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper/dists
+          key: gradle-${{ runner.os }}-${{ hashFiles(format('{0}/package-lock.json', env.APP_DIR), format('{0}/android/**/*.gradle', env.APP_DIR), format('{0}/android/gradle/wrapper/gradle-wrapper.properties', env.APP_DIR)) }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # assembleDebug makes the APK; bundleRelease makes the app bundle (.aab), the format Google
+      # Play wants. No signing values are given, so the bundle is left unsigned: it proves that
+      # the release build works, and the "Android release" workflow makes the signed one.
+      - name: Build the debug APK and the release bundle
+        working-directory: ${{ env.APP_DIR }}/android
+        run: sh ./gradlew --no-daemon assembleDebug bundleRelease
+
+      - name: Check what was built
+        run: |
+          apk="$APP_DIR/android/app/build/outputs/apk/debug/app-debug.apk"
+          aab="$APP_DIR/android/app/build/outputs/bundle/release/app-release.aab"
+          need() { if ! "$@"; then echo "::error::What was built failed this check: $*"; exit 1; fi; }
+          need test -f "$apk"
+          need test -f "$aab"
+
+          # The newest build tools of the SDK on this machine (aapt2 reads what is inside an APK).
+          tools="$(ls -d "${ANDROID_HOME:-$ANDROID_SDK_ROOT}"/build-tools/*/ | sort -V | tail -n 1)"
+          need test -x "${tools}aapt2"
+          config() { node -p "const c = require('./$APP_DIR/app.config.json'); $1"; }
+          # The Android package name: "androidAppId" where app.config.json has one, else "appId".
+          package_name="$(config 'c.androidAppId || c.appId')"
+
+          # The app bundle keeps its manifest in another format than an APK. Repacked like this,
+          # its main part can be read with the same tool.
+          mkdir -p "$RUNNER_TEMP/bundle"
+          unzip -q -o "$aab" 'base/manifest/AndroidManifest.xml' 'base/resources.pb' 'base/res/*' -d "$RUNNER_TEMP/bundle"
+          mv "$RUNNER_TEMP/bundle/base/manifest/AndroidManifest.xml" "$RUNNER_TEMP/bundle/base/AndroidManifest.xml"
+          (cd "$RUNNER_TEMP/bundle/base" && zip -q -r ../base.apk AndroidManifest.xml resources.pb res)
+
+          apk_badging="$("${tools}aapt2" dump badging "$apk")"
+          aab_badging="$("${tools}aapt2" dump badging "$RUNNER_TEMP/bundle/base.apk")"
+          apk_manifest="$("${tools}aapt2" dump xmltree "$apk" --file AndroidManifest.xml)"
+          apk_files="$(unzip -Z1 "$apk")"
+          aab_files="$(unzip -Z1 "$aab")"
+          apk_says() { grep -qF -- "$1" <<<"$apk_badging"; }
+          aab_says() { grep -qF -- "$1" <<<"$aab_badging"; }
+          apk_manifest_says() { grep -qF -- "$1" <<<"$apk_manifest"; }
+          apk_holds() { grep -qxF -- "$1" <<<"$apk_files"; }
+          aab_holds() { grep -qxF -- "$1" <<<"$aab_files"; }
+          sdk_level() { sed -n "s/^$1:'\(.*\)'/\1/p" <<<"$apk_badging"; }
+
+          # Identity and version, from app.config.json.
+          identity="package: name='$package_name' versionCode='$(config c.build)' versionName='$(config c.version)'"
+          need apk_says "$identity"
+          need aab_says "$identity"
+          need apk_says "application-label:'$(config c.appName)'"
+          need aab_says "application-label:'$(config c.appName)'"
+          need apk_says "application-debuggable"
+          if aab_says "application-debuggable"; then echo "::error::The release bundle is debuggable."; exit 1; fi
+
+          # What adverts and purchases need in the manifest.
+          need apk_says "uses-permission: name='android.permission.INTERNET'"
+          need apk_says "uses-permission: name='com.google.android.gms.permission.AD_ID'"
+          need apk_says "uses-permission: name='com.android.vending.BILLING'"
+          need aab_says "uses-permission: name='com.google.android.gms.permission.AD_ID'"
+          need aab_says "uses-permission: name='com.android.vending.BILLING'"
+          need apk_manifest_says '"com.google.android.gms.ads.APPLICATION_ID"'
+          need apk_manifest_says "=\"$(config c.admob.android.appId)\""
+          # 1 is Android's number for "portrait".
+          need apk_manifest_says 'screenOrientation(0x0101001e)=1'
+          need apk_manifest_says 'usesCleartextTraffic(0x010104ec)=false'
+
+          # The web game and the bridge are inside, and the bridge is the one just built.
+          for file in index.html vendor/native-bridge.js; do
+            need apk_holds "assets/public/$file"
+            need aab_holds "base/assets/public/$file"
+          done
+          need apk_holds assets/capacitor.config.json
+          need apk_holds assets/capacitor.plugins.json
+          unzip -p "$apk" assets/public/vendor/native-bridge.js > "$RUNNER_TEMP/bridge-in-apk.js"
+          need cmp -s "$RUNNER_TEMP/bridge-in-apk.js" "$WEB_DIR/vendor/native-bridge.js"
+
+          # Machine code. Today the app has none, which is why it needs nothing more to run on
+          # phones with 16 KB memory pages (a Google Play requirement). If a plugin ever brings
+          # some, it must be 16 KB-ready too: zipalign checks how it is packed, and
+          # SHIPPING-ANDROID.md says what else to look at.
+          native="$(grep -c '\.so$' <<<"$apk_files" || true)"
+          if [ "$native" -gt 0 ]; then
+            echo "::warning::The app now contains $native native libraries (.so files). Check that each supports 16 KB memory pages; see SHIPPING-ANDROID.md."
+            need "${tools}zipalign" -c -P 16 4 "$apk"
+          fi
+
+          {
+            echo "### Android build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Name | $(config c.appName) |"
+            echo "| Package name | $package_name |"
+            echo "| Version (code) | $(config c.version) ($(config c.build)) |"
+            echo "| AdMob app id | $(config c.admob.android.appId) |"
+            echo "| Runs on Android API | $(sdk_level minSdkVersion) and later |"
+            echo "| Targets Android API | $(sdk_level targetSdkVersion) |"
+            echo "| Google Mobile Ads SDK | $(unzip -p "$apk" play-services-ads.properties 2>/dev/null | sed -n 's/^version=//p') |"
+            echo "| Native libraries | $native |"
+            echo "| Permissions | $(sed -n "s/^uses-permission: name='\(.*\)'/\1/p" <<<"$apk_badging" | sed 's/^android\.permission\.//' | paste -sd ' ' -) |"
+            echo "| Debug APK | $(du -h "$apk" | cut -f1) |"
+            echo "| Release bundle (unsigned) | $(du -h "$aab" | cut -f1) |"
+            echo "| Built with | $(java -version 2>&1 | grep -m 1 version), Android build tools $(basename "$tools") |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Under a name that says what it is when it lands in a phone's Downloads folder.
+          mkdir -p "$RUNNER_TEMP/apk"
+          named="$RUNNER_TEMP/apk/$package_name-$(config c.version)-debug.apk"
+          cp "$apk" "$named"
+          echo "DEBUG_APK=$named" >> "$GITHUB_ENV"
+
+      # Uploaded as it is, not inside a zip file, so that it can be downloaded and opened on a
+      # phone directly.
+      - name: Keep the debug APK with this run
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.DEBUG_APK }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 14

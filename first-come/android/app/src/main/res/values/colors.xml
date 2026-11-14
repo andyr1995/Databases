@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Written by scripts/configure-android.mjs. Do not edit: `npm run sync` writes it again. The colours come from resources/android/colors.json. -->
+<resources>
+    <!-- The launch screen. -->
+    <color name="splash_background">#1b1c44</color>
+    <!-- Behind the status bar and the navigation bar, where the game itself is not drawn under them. -->
+    <color name="system_bar">#1b1c44</color>
+</resources>
